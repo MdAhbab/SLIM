@@ -1,0 +1,16 @@
+# Core
+torch>=2.0
+numpy
+pyyaml
+scikit-learn
+scipy            # paired tests in scripts/aggregate_seeds.py
+
+# Plotting
+matplotlib
+
+# Indexed access to the hg19 reference genome. Without it the sequence branch
+# silently falls back to placeholder sequences, so install it before training.
+pyfaidx
+
+# Tests
+pytest

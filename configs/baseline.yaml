@@ -1,0 +1,9 @@
+# KAN-Transformer baseline: global self-attention, spline feed-forward layer.
+# Shares the branches, the pooling, the heads, the data pipeline and the
+# training budget with every SLIM variant.
+extends: base.yaml
+
+experiment_name: "baseline"
+
+model:
+  variant: "baseline"

@@ -1,0 +1,24 @@
+# SLIM variant KA: survival-gated encoder, spline feed-forward layer.
+# This is the matched counterpart of the baseline: both carry the spline
+# feed-forward layer, so the comparison isolates the attention mechanism.
+extends: base.yaml
+
+experiment_name: "slim_ka"
+
+model:
+  variant: "KA"          # ffn_type kan, [180, 64, 180]
+
+  memory:
+    local_window: 64             # each token attends to 32 neighbours each side
+    bin_slots: 16                # bounded memory capacity
+    bin_dim: 96                  # width of a memory slot
+    survivors_per_layer: 8       # tokens written to memory per layer
+    ffn_multiplier: 4            # feed-forward width for the rectified unit
+    gate_temperature: 1.0
+    novelty_weight: 0.35         # alpha, the novelty term in the survival score
+    prediction_error_weight: 0.20  # beta, the prediction-error term
+    bin_decay: 0.92              # gamma, decay applied to aged slots
+    bin_update: "gru"            # gru | fifo | attention
+    use_learned_score: true      # set false to isolate the other gate terms
+    use_novelty: true
+    use_prediction_error: true

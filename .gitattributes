@@ -1,0 +1,10 @@
+# Keep line endings consistent between Windows and Linux checkouts.
+* text=auto eol=lf
+
+# Binary payloads: never touched by line-ending conversion.
+*.npz binary
+*.pt  binary
+*.pkl binary
+*.png binary
+*.pdf binary
+*.gz  binary

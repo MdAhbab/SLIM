@@ -1,0 +1,67 @@
+# Settings shared by every model. A variant configuration extends this file
+# and overrides only the keys that define the variant, so no variant can
+# accidentally differ in the data pipeline, the optimizer or the budget.
+
+paths:
+  bengi_dir: "./data/BENGI"
+  feats_config: "./data/genomic_data/CTCF_DNase_6histone_local.500.json"
+  ref_genome: "./data/hg19.fa"
+
+data:
+  sequence_length: 6000      # 3000 bp enhancer plus 3000 bp promoter
+  epigenetic_bins: 5000      # a 2.5 Mb window in 500 bp bins
+  n_epigenetic_features: 9   # one position channel plus eight chromatin tracks
+  kmer_size: 3
+  batch_size: 64             # fits a 16 GB card with headroom for the KAN variant
+  bin_size: 500
+  seq_len_bp: 2500000
+  enhancer_window: 3000
+  promoter_window: 3000
+  encoder_fit_samples: 5000
+  modalities: "all"          # all | seq | seq+pos
+  feats_order:
+    - "CTCF"
+    - "DNase"
+    - "H3K27ac"
+    - "H3K27me3"
+    - "H3K36me3"
+    - "H3K4me1"
+    - "H3K4me3"
+    - "H3K9me3"
+
+model:
+  hidden_dim: 180            # token width, shared by both branches
+  num_heads: 6               # 180 / 6 = 30 per head
+  num_layers: 3              # encoder depth
+  n_tokens: 128              # tokens produced by the sequence branch
+  dropout: 0.1
+  head_dropout: 0.2
+  kan_hidden: 64             # spline layer width, [180, 64, 180]
+  sa_da: 64                  # pooling attention hidden width
+  sa_r: 32                   # pooling attention heads
+  att_penalty: 0.1           # Frobenius penalty keeping pooling heads distinct
+  drop_path_rate: 0.0
+
+training:
+  lr: 0.0001
+  epochs: 5                  # the budget every reported model shares
+  lambda_dist: 1.0           # weight of the distance regression loss
+  grad_clip: 1.0
+  patience: 15
+  weight_decay: 0.0001       # identical for every variant
+  use_cosine_scheduler: false
+  entropy_loss_weight: 0.01      # keeps the survival gate from collapsing
+  diversity_loss_weight: 0.05    # keeps memory slots distinct
+  use_amp: true
+  num_workers: 4             # keeps the GPU fed without exhausting shared memory
+  prefetch_factor: 2
+  persistent_workers: false
+  valid_chroms:              # held out for validation inside the training cells
+    - "chr11"
+    - "chr17"
+
+augmentation:
+  enabled: true
+  rc_prob: 0.5               # reverse complement
+  epi_noise_std: 0.05        # Gaussian noise on chromatin channels
+  shift_max_bins: 3          # random bin shift

@@ -1,0 +1,79 @@
+_test_cells:
+- HMEC
+- NHEK
+_train_cells:
+- GM12878
+- HeLa
+- K562
+- IMR90
+augmentation:
+  enabled: true
+  epi_noise_std: 0.05
+  rc_prob: 0.5
+  shift_max_bins: 3
+data:
+  batch_size: 64
+  bin_size: 500
+  encoder_fit_samples: 5000
+  enhancer_window: 3000
+  epigenetic_bins: 5000
+  feats_order:
+  - CTCF
+  - DNase
+  - H3K27ac
+  - H3K27me3
+  - H3K36me3
+  - H3K4me1
+  - H3K4me3
+  - H3K9me3
+  kmer_size: 3
+  n_epigenetic_features: 9
+  promoter_window: 3000
+  seq_len_bp: 2500000
+  sequence_length: 6000
+experiment_name: SAMN_KAN_EPI_v1
+model:
+  att_penalty: 0.1
+  dropout: 0.1
+  head_dropout: 0.2
+  hidden_dim: 180
+  kan_hidden: 64
+  n_tokens: 128
+  num_heads: 6
+  num_layers: 3
+  sa_da: 64
+  sa_r: 32
+  samn:
+    bin_decay: 0.92
+    bin_dim: 96
+    bin_slots: 16
+    bin_update: gru
+    gate_temperature: 1.0
+    local_window: 64
+    novelty_weight: 0.35
+    num_layers: 3
+    prediction_error_weight: 0.2
+    survivors_per_layer: 8
+paths:
+  bengi_dir: ./data/BENGI
+  feats_config: ./data/genomic_data/CTCF_DNase_6histone_local.500.json
+  ref_genome: ./data/hg19.fa
+  save_dir: ./output_samn_kan
+training:
+  att_penalty_coeff: 0.1
+  diversity_loss_weight: 0.05
+  entropy_loss_weight: 0.01
+  epochs: 5
+  grad_clip: 1.0
+  lambda_dist: 1.0
+  lr: 0.0001
+  num_workers: 4
+  patience: 15
+  persistent_workers: false
+  prefetch_factor: 2
+  use_amp: true
+  use_cosine_scheduler: false
+  valid_chroms:
+  - chr11
+  - chr17
+  weight_decay: 0.0001
