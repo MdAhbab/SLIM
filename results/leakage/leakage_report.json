@@ -1,0 +1,165 @@
+{
+  "train_cells": [
+    "GM12878",
+    "HeLa",
+    "K562",
+    "IMR90"
+  ],
+  "test_cells": [
+    "HMEC",
+    "NHEK"
+  ],
+  "min_overlap": 0.5,
+  "n_train_pairs": 314610,
+  "n_test_pairs": 37707,
+  "enhancer_reused": 12327,
+  "enhancer_reused_exact": 12327,
+  "promoter_reused": 27995,
+  "promoter_reused_exact": 27995,
+  "either_reused": 29802,
+  "both_reused": 10520,
+  "pair_reused": 6593,
+  "disjoint": 7905,
+  "disjoint_positive_rate": 0.1709044908285895,
+  "overall_positive_rate": 0.10889224812369055,
+  "by_chromosome": [
+    {
+      "chrom": "chr1",
+      "n": 3734,
+      "reused": 3185,
+      "fraction": 0.852972683449384
+    },
+    {
+      "chrom": "chr2",
+      "n": 2250,
+      "reused": 1724,
+      "fraction": 0.7662222222222222
+    },
+    {
+      "chrom": "chr3",
+      "n": 2646,
+      "reused": 1963,
+      "fraction": 0.7418745275888133
+    },
+    {
+      "chrom": "chr4",
+      "n": 557,
+      "reused": 377,
+      "fraction": 0.6768402154398564
+    },
+    {
+      "chrom": "chr5",
+      "n": 1432,
+      "reused": 1061,
+      "fraction": 0.7409217877094972
+    },
+    {
+      "chrom": "chr6",
+      "n": 2129,
+      "reused": 1760,
+      "fraction": 0.8266791921089713
+    },
+    {
+      "chrom": "chr7",
+      "n": 1512,
+      "reused": 1240,
+      "fraction": 0.8201058201058201
+    },
+    {
+      "chrom": "chr8",
+      "n": 1317,
+      "reused": 1005,
+      "fraction": 0.7630979498861048
+    },
+    {
+      "chrom": "chr9",
+      "n": 1118,
+      "reused": 890,
+      "fraction": 0.7960644007155635
+    },
+    {
+      "chrom": "chrX",
+      "n": 418,
+      "reused": 335,
+      "fraction": 0.8014354066985646
+    },
+    {
+      "chrom": "chr10",
+      "n": 976,
+      "reused": 748,
+      "fraction": 0.7663934426229508
+    },
+    {
+      "chrom": "chr11",
+      "n": 5559,
+      "reused": 5057,
+      "fraction": 0.909695988487138
+    },
+    {
+      "chrom": "chr12",
+      "n": 3511,
+      "reused": 2289,
+      "fraction": 0.6519510111079464
+    },
+    {
+      "chrom": "chr13",
+      "n": 150,
+      "reused": 63,
+      "fraction": 0.42
+    },
+    {
+      "chrom": "chr14",
+      "n": 1354,
+      "reused": 1070,
+      "fraction": 0.7902511078286558
+    },
+    {
+      "chrom": "chr15",
+      "n": 1209,
+      "reused": 1007,
+      "fraction": 0.8329197684036393
+    },
+    {
+      "chrom": "chr16",
+      "n": 1425,
+      "reused": 1052,
+      "fraction": 0.7382456140350877
+    },
+    {
+      "chrom": "chr17",
+      "n": 2314,
+      "reused": 1890,
+      "fraction": 0.8167675021607606
+    },
+    {
+      "chrom": "chr18",
+      "n": 714,
+      "reused": 456,
+      "fraction": 0.6386554621848739
+    },
+    {
+      "chrom": "chr19",
+      "n": 2091,
+      "reused": 1819,
+      "fraction": 0.8699186991869918
+    },
+    {
+      "chrom": "chr20",
+      "n": 170,
+      "reused": 133,
+      "fraction": 0.7823529411764706
+    },
+    {
+      "chrom": "chr21",
+      "n": 50,
+      "reused": 45,
+      "fraction": 0.9
+    },
+    {
+      "chrom": "chr22",
+      "n": 1071,
+      "reused": 633,
+      "fraction": 0.5910364145658263
+    }
+  ]
+}

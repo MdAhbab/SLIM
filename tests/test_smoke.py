@@ -28,6 +28,7 @@ CONFIGS = {
     "A": "configs/slim_a.yaml",
     "KA": "configs/slim_ka.yaml",
     "GA": "configs/slim_ga.yaml",
+    "KA_legacy": "configs/slim_ka_legacy.yaml",
 }
 BATCH = 2
 
@@ -76,14 +77,15 @@ def test_forward_pass_shapes(name):
         assert torch.isfinite(model.memory_auxiliary_loss(aux))
 
 
-@pytest.mark.parametrize("name", ["A", "KA", "GA"])
+@pytest.mark.parametrize("name", ["A", "KA", "GA", "KA_legacy"])
 def test_backward_pass_reaches_every_parameter(name):
     """A gradient must reach every trainable weight, including the memory."""
     config = small_config(name)
     model = build_model(config).train()
     out = model(*random_batch(config))
     loss = out[0].sum() + out[1].sum() + model.attention_penalty(out[2])
-    loss = loss + model.memory_auxiliary_loss(out[3])
+    loss = loss + model.memory_auxiliary_loss(
+        out[3], prediction_weight=config["training"]["prediction_loss_weight"])
     loss.backward()
 
     without_gradient = [n for n, p in model.named_parameters()
@@ -98,12 +100,15 @@ def test_write_log_is_available_and_in_range():
     with torch.no_grad():
         out = model(*random_batch(config), return_trace=True)
     trace = out[-1]
-    assert len(trace) == model.memory_config.num_layers
+    assert len(trace["tokens"]) == model.memory_config.num_layers
+    assert len(trace["slots"]) == model.memory_config.num_layers
     n_tokens = model.n_seq_tokens + model.n_epi_tokens
-    for layer in trace:
-        assert layer.shape[0] == BATCH
-        assert int(layer.min()) >= 0
-        assert int(layer.max()) < n_tokens
+    for tokens, slots in zip(trace["tokens"], trace["slots"]):
+        assert tokens.shape[0] == BATCH
+        assert int(tokens.min()) >= 0
+        assert int(tokens.max()) < n_tokens
+        assert slots.shape == tokens.shape
+        assert int(slots.max()) < model.memory_config.bin_slots
 
 
 def test_sequence_only_hides_every_chromatin_channel():

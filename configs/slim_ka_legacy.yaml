@@ -1,0 +1,22 @@
+# SLIM variant KA with the original memory rules, for one comparison run.
+#
+# Identical to slim_ka.yaml except for the memory switches, which are set back
+# to the behaviour of the encoder that produced the first KA results: survivors
+# fill slots 0-7 in score order, the prediction term is one pooled vector per
+# sequence, a LayerNorm over every slot undoes the decay, and the local window
+# crosses the DNA and chromatin seams. The task gradient reaches only the
+# written tokens here, as it does in slim_ka.yaml. Comparing this run with slim_ka.yaml measures what
+# the fixes changed. Checkpoints trained before the switches existed rebuild
+# with exactly these settings.
+extends: slim_ka.yaml
+
+experiment_name: "slim_ka_legacy"
+output_name: "ka_legacy"         # results/ka_legacy/seed<N>, not results/ka
+
+model:
+  memory:
+    slot_addressing: "order"
+    gate_gradient: "selected"
+    prediction_target: "pooled"
+    memory_norm: "all"
+    respect_segments: false

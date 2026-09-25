@@ -3,8 +3,10 @@ Survival-gated bounded-memory encoder.
 
 The encoder replaces global self-attention with three steps per layer:
 
-  1. Local windowed self-attention, so each token mixes only with neighbours
-     inside a window of `local_window` tokens.
+  1. Sliding-window self-attention, so each token mixes only with neighbours
+     inside a window of `local_window` tokens. Scores are computed block by
+     block, so the cost grows with sequence length times window rather than
+     with the square of the length.
   2. A survival gate that scores every token and writes the highest-scoring
      ones into a bounded memory of `bin_slots` slots through a gated recurrent
      update with decay.
@@ -23,10 +25,61 @@ Hidden widths follow the usual parameter-matching convention for gated units,
 so the rectified and gated sublayers hold the same number of parameters to
 within 0.1 percent. Every other module in the block is shared, so a comparison
 between variants isolates the feed-forward sublayer.
+
+Memory behaviour
+----------------
+Five options correct places where the original encoder did not do what its
+design describes. Each defaults to the original behaviour, so a checkpoint
+trained before the option existed rebuilds and loads exactly. The variant
+configurations switch on all of them except `gate_gradient`, for the reason
+given there; `configs/slim_ka_legacy.yaml` switches them all off, for a run
+that measures what the fixes changed.
+
+    slot_addressing    "order": survivor j is written to slot j, so slots
+                       k..bin_slots-1 never receive anything.
+                       "content": survivors, in score order, each claim the
+                       free slot whose content is most similar to theirs.
+    gate_gradient      "selected": the task loss reaches the survival score
+                       only at the tokens that were written.
+                       "all": the write is a sum over every token weighted by
+                       its straight-through gate. The forward pass is
+                       unchanged, and the gradient reaches every score.
+                       Needs content addressing. Not used by the variant
+                       configurations: in short runs on the real data it made
+                       the gate converge on the same positions for every input
+                       faster than "selected" did.
+    prediction_target  "pooled": one vector per sequence, decoded from the mean
+                       slot and compared with every token; nothing trains it.
+                       "position": each token is predicted from the memory by
+                       a query built from its position alone, and a prediction
+                       loss trains the predictor.
+    memory_norm        "all": a LayerNorm over every slot after the update,
+                       which undoes the decay applied to unwritten slots.
+                       "written": only freshly written slots are normalised,
+                       so an unwritten slot keeps shrinking by `bin_decay`.
+    segment_lengths    None: the local window runs across the whole row.
+                       A tuple of lengths: tokens attend only inside their own
+                       segment, so the window stops at the seam between the
+                       enhancer and promoter DNA and at the seam between DNA
+                       and chromatin.
+
+One further option addresses a failure the original design anticipated:
+
+    selection_noise    0: the survivors are the top-k scores. A positive value
+                       adds Gumbel noise of that scale to the scores used for
+                       choosing survivors, in training only, which samples k
+                       tokens without replacement from softmax(score / scale).
+                       Tokens just outside the top-k are then written some of
+                       the time, so the gate keeps receiving evidence about
+                       them instead of locking onto the positions it chose
+                       first. Evaluation always takes the plain top-k. In short
+                       runs on the real data it did not reduce positional
+                       collapse, so the variant configurations leave it at 0.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -68,9 +121,38 @@ class MemoryConfig:
     use_novelty: bool = True
     use_prediction_error: bool = True
 
+    # Memory behaviour; see the module docstring. Defaults are the original
+    # behaviour, so older checkpoints rebuild exactly.
+    slot_addressing: str = "order"
+    gate_gradient: str = "selected"
+    prediction_target: str = "pooled"
+    memory_norm: str = "all"
+    segment_lengths: Optional[Tuple[int, ...]] = None
+    selection_noise: float = 0.0
+
     def __post_init__(self) -> None:
         if self.bin_update not in {"fifo", "gru", "attention"}:
             raise ValueError("bin_update must be one of: fifo, gru, attention")
+        if self.slot_addressing not in {"order", "content"}:
+            raise ValueError("slot_addressing must be one of: order, content")
+        if self.gate_gradient not in {"selected", "all"}:
+            raise ValueError("gate_gradient must be one of: selected, all")
+        if self.prediction_target not in {"pooled", "position"}:
+            raise ValueError("prediction_target must be one of: pooled, position")
+        if self.memory_norm not in {"all", "written"}:
+            raise ValueError("memory_norm must be one of: all, written")
+        if self.bin_update != "gru" and (self.slot_addressing == "content"
+                                         or self.memory_norm == "written"):
+            raise ValueError("content addressing and memory_norm='written' "
+                             "apply to the gru update only")
+        if self.gate_gradient == "all" and self.slot_addressing != "content":
+            raise ValueError("gate_gradient='all' needs slot_addressing='content'")
+        if self.selection_noise < 0:
+            raise ValueError("selection_noise must be zero or positive")
+        if self.segment_lengths is not None:
+            self.segment_lengths = tuple(int(n) for n in self.segment_lengths)
+            if not self.segment_lengths or min(self.segment_lengths) <= 0:
+                raise ValueError("segment_lengths must be positive lengths")
         if self.ffn_type not in {"gelu", "kan", "glu"}:
             raise ValueError("ffn_type must be one of: gelu, kan, glu")
         if self.model_dim % self.num_heads != 0:
@@ -86,7 +168,16 @@ class MemoryConfig:
 
 
 class LocalSelfAttention(nn.Module):
-    """Multi-head self-attention restricted to a local window."""
+    """Multi-head self-attention restricted to a sliding window.
+
+    Token i attends to every token j with |i - j| <= local_window // 2, and,
+    when segment ids are given, only to tokens in its own segment. Queries are
+    taken in blocks of `radius` tokens, and each block is scored against the
+    `3 * radius` keys its members' windows can reach. The score tensor
+    therefore holds about 3 * radius * seq_len entries per head rather than
+    seq_len squared, and the result equals masked full attention to
+    floating-point precision.
+    """
 
     def __init__(self, model_dim: int, num_heads: int, local_window: int,
                  dropout: float):
@@ -97,33 +188,58 @@ class LocalSelfAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = model_dim // num_heads
         self.local_window = local_window
+        self.radius = max(1, local_window // 2)
         self.qkv = nn.Linear(model_dim, model_dim * 3, bias=False)
         self.out = nn.Linear(model_dim, model_dim, bias=False)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, segment_ids: Optional[Tensor] = None) -> Tensor:
         batch, seq_len, dim = x.shape
-        qkv = self.qkv(x)
-        q, k, v = qkv.chunk(3, dim=-1)
-        q = q.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        k = k.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        v = v.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        radius = self.radius
+        block = radius
+        n_blocks = -(-seq_len // block)
+        padded = n_blocks * block
+        span = block + 2 * radius
+
+        q, k, v = self.qkv(x).chunk(3, dim=-1)
+        q, k, v = (t.view(batch, seq_len, self.num_heads, self.head_dim)
+                   .transpose(1, 2) for t in (q, k, v))
+        # Queries padded at the end to whole blocks; keys and values padded by
+        # one radius on each side, then cut into overlapping spans of keys.
+        q = F.pad(q, (0, 0, 0, padded - seq_len)).reshape(
+            batch, self.num_heads, n_blocks, block, self.head_dim)
+        pad = (0, 0, radius, padded - seq_len + radius)
+        k = F.pad(k, pad).unfold(2, span, block).transpose(-1, -2)
+        v = F.pad(v, pad).unfold(2, span, block).transpose(-1, -2)
+
         scores = torch.matmul(q, k.transpose(-2, -1)) / (self.head_dim ** 0.5)
-        mask = self._local_mask(seq_len, x.device)
+        mask = self._block_mask(seq_len, n_blocks, x.device, segment_ids)
         scores = scores.masked_fill(~mask, -1e4)
         weights = F.softmax(scores, dim=-1)
         weights = weights.masked_fill(~mask, 0.0)
         weights = weights / weights.sum(dim=-1, keepdim=True).clamp_min(1e-6)
         weights = self.dropout(weights)
         y = torch.matmul(weights, v)
+        y = y.reshape(batch, self.num_heads, padded, self.head_dim)[:, :, :seq_len]
         y = y.transpose(1, 2).contiguous().view(batch, seq_len, dim)
         return self.out(y)
 
-    def _local_mask(self, seq_len: int, device: torch.device) -> Tensor:
-        radius = max(1, self.local_window // 2)
-        positions = torch.arange(seq_len, device=device)
-        distance = (positions[:, None] - positions[None, :]).abs()
-        return (distance <= radius).view(1, 1, seq_len, seq_len)
+    def _block_mask(self, seq_len: int, n_blocks: int, device: torch.device,
+                    segment_ids: Optional[Tensor]) -> Tensor:
+        """(n_blocks, block, span) mask of the key positions each query keeps."""
+        radius = self.radius
+        block = radius
+        starts = torch.arange(n_blocks, device=device)[:, None, None] * block
+        query = starts + torch.arange(block, device=device)[None, :, None]
+        key = starts - radius + torch.arange(
+            block + 2 * radius, device=device)[None, None, :]
+        mask = (((query - key).abs() <= radius) & (key >= 0) & (key < seq_len)
+                & (query < seq_len))
+        if segment_ids is not None:
+            last = seq_len - 1
+            mask = mask & (segment_ids[query.clamp(0, last)]
+                           == segment_ids[key.clamp(0, last)])
+        return mask
 
 
 class BinCrossAttention(nn.Module):
@@ -165,6 +281,17 @@ class BinCrossAttention(nn.Module):
 # ---------------------------------------------------------------------------
 
 
+def sinusoidal_table(length: int, dim: int) -> Tensor:
+    """(length, dim) sinusoidal position table, as in the input encoding."""
+    position = torch.arange(length, dtype=torch.float32)[:, None]
+    div_term = torch.exp(torch.arange(0, dim, 2, dtype=torch.float32)
+                         * (-math.log(10000.0) / dim))
+    table = torch.zeros(length, dim)
+    table[:, 0::2] = torch.sin(position * div_term)
+    table[:, 1::2] = torch.cos(position * div_term)
+    return table
+
+
 class SurvivalGate(nn.Module):
     """Scores tokens for survival into the bounded memory.
 
@@ -172,11 +299,21 @@ class SurvivalGate(nn.Module):
 
         s_i = g(x_i, mean(B)) + alpha * novelty_i + beta * prediction_error_i
 
-    where g is a learned two-layer network, novelty is one minus the highest
-    cosine similarity between the compressed token and any memory slot, and
-    prediction error is the squared error between the token and a linear
-    prediction made from the memory, normalised by its batch mean. Each term
-    can be switched off independently to isolate its contribution.
+    where g is a learned two-layer network and novelty is one minus the highest
+    cosine similarity between the compressed token and any memory slot. Each
+    term can be switched off independently to isolate its contribution.
+
+    The prediction error depends on `prediction_target`:
+
+      "pooled"    the squared error between the token and a single vector
+                  decoded from the mean slot, normalised by its mean over the
+                  sequence. The original behaviour: the same vector is
+                  compared with every token and no loss trains the decoder.
+      "position"  the squared error between the token and a prediction read
+                  from the memory by a query built from the token's position
+                  alone, so it asks how poorly the current memory predicts
+                  what sits at that position. The predictor is trained by
+                  `prediction_loss`, returned alongside the score.
     """
 
     def __init__(self, config: MemoryConfig):
@@ -189,9 +326,16 @@ class SurvivalGate(nn.Module):
             nn.GELU(),
             nn.Linear(config.model_dim, 1),
         )
+        if config.prediction_target == "position":
+            self.position_query = nn.Linear(config.model_dim, config.bin_dim,
+                                            bias=False)
+            self.register_buffer(
+                "positions", sinusoidal_table(config.max_length, config.model_dim),
+                persistent=False)
 
     def forward(self, tokens: Tensor, bin_state: Tensor
-                ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Dict[str, Tensor]]:
+                ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Optional[Tensor],
+                           Dict[str, Tensor]]:
         batch, seq_len, _ = tokens.shape
         compressed = self.compress(tokens)
         bin_pool = bin_state.mean(dim=1)
@@ -200,7 +344,12 @@ class SurvivalGate(nn.Module):
         learned_score = self.score_mlp(
             torch.cat([tokens, expanded_pool], dim=-1)).squeeze(-1)
         novelty = self._novelty(compressed, bin_state)
-        prediction_error = self._prediction_error(tokens, bin_pool)
+        prediction_loss = None
+        if self.config.prediction_target == "position":
+            prediction_error, prediction_loss = self._positional_prediction(
+                tokens, bin_state)
+        else:
+            prediction_error = self._prediction_error(tokens, bin_pool)
 
         score = torch.zeros_like(learned_score)
         if self.config.use_learned_score:
@@ -210,7 +359,15 @@ class SurvivalGate(nn.Module):
         if self.config.use_prediction_error:
             score = score + self.config.prediction_error_weight * prediction_error
 
-        gate, gate_probability = self._topk_gate(score)
+        # The scores that choose the survivors. Gumbel noise in training
+        # samples the survivors instead of always taking the same top-k.
+        ranking = score
+        if self.training and self.config.selection_noise > 0:
+            uniform = torch.rand_like(score).clamp(1e-6, 1.0 - 1e-6)
+            ranking = score - self.config.selection_noise * torch.log(
+                -torch.log(uniform))
+
+        gate, gate_probability = self._topk_gate(ranking, score)
         debug = {
             "score": score.detach(),
             "novelty": novelty.detach(),
@@ -218,7 +375,8 @@ class SurvivalGate(nn.Module):
             "gate": gate.detach(),
             "gate_probability": gate_probability.detach(),
         }
-        return compressed, gate, gate_probability, score, debug
+        return (compressed, gate, gate_probability, ranking, prediction_loss,
+                debug)
 
     def _novelty(self, candidates: Tensor, bin_state: Tensor) -> Tensor:
         candidate_norm = F.normalize(candidates, dim=-1)
@@ -232,9 +390,36 @@ class SurvivalGate(nn.Module):
         error = (tokens - prediction).pow(2).mean(dim=-1)
         return error / (error.detach().mean(dim=-1, keepdim=True) + 1e-6)
 
-    def _topk_gate(self, score: Tensor) -> Tuple[Tensor, Tensor]:
+    def _positional_prediction(self, tokens: Tensor, bin_state: Tensor
+                               ) -> Tuple[Tensor, Tensor]:
+        """Predict each token from the memory, queried by its position alone.
+
+        Returns the normalised per-token error, used as a score term, and the
+        mean error, used as the predictor's training loss.
+
+        The memory and the tokens are detached here. The loss then trains only
+        the predictor, so it cannot pull the memory or the tokens toward
+        whatever is easy to predict, and the score term is a fixed signal of
+        surprise rather than something the gate can game. The target is the
+        token after a parameter-free layer norm, which keeps the loss on the
+        same scale however the residual stream grows.
+        """
+        seq_len = tokens.shape[1]
+        memory = bin_state.detach()
+        query = self.position_query(self.positions[:seq_len])
+        weights = F.softmax(torch.matmul(query, memory.transpose(1, 2))
+                            / (self.config.bin_dim ** 0.5), dim=-1)
+        prediction = self.predict_from_bin(torch.matmul(weights, memory))
+        target = F.layer_norm(tokens.detach(), (tokens.shape[-1],))
+        error = (target - prediction).pow(2).mean(dim=-1)
+        surprise = error.detach()
+        return (surprise / (surprise.mean(dim=-1, keepdim=True) + 1e-6),
+                error.mean())
+
+    def _topk_gate(self, ranking: Tensor, score: Tensor
+                   ) -> Tuple[Tensor, Tensor]:
         k = min(self.config.survivors_per_layer, score.shape[-1])
-        topk = torch.topk(score, k=k, dim=-1).indices
+        topk = torch.topk(ranking, k=k, dim=-1).indices
         hard = torch.zeros_like(score).scatter(1, topk, 1.0)
         soft = torch.sigmoid(score / max(self.config.gate_temperature, 1e-4))
         if not self.config.use_straight_through_gate:
@@ -373,18 +558,26 @@ class MemoryBlock(nn.Module):
             self.write_gate = nn.Linear(config.bin_dim * 2, config.bin_dim)
             self.write_value = nn.Linear(config.bin_dim, config.bin_dim)
 
-    def forward(self, x: Tensor, bin_state: Tensor
+    def forward(self, x: Tensor, bin_state: Tensor,
+                segment_ids: Optional[Tensor] = None
                 ) -> Tuple[Tensor, Tensor, Dict[str, Tensor]]:
-        # 1. Local windowed self-attention.
-        local = self.local_attention(self.norm_local(x))
+        # 1. Sliding-window self-attention.
+        local = self.local_attention(self.norm_local(x), segment_ids)
         x = x + self.drop_path(self.dropout(local))
 
-        # 2. Score tokens, write the survivors into memory.
-        candidates, gate, gate_prob, score, _ = self.survival_gate(x, bin_state)
-        selected, selected_gates, selected_indices = self._select_candidates(
-            candidates, gate, score)
-        selected = selected * selected_gates.unsqueeze(-1)
-        next_bin = self._update_bin(bin_state, selected)
+        # 2. Score tokens, write the survivors into memory. `ranking` is the
+        # survival score, plus selection noise when that is switched on.
+        (candidates, gate, gate_prob, ranking, prediction_loss,
+         _) = self.survival_gate(x, bin_state)
+        if self.config.slot_addressing == "content":
+            next_bin, selected_indices, slot_indices = self._content_write(
+                bin_state, candidates, gate, ranking)
+        else:
+            selected, selected_gates, selected_indices = self._select_candidates(
+                candidates, gate, ranking)
+            selected = selected * selected_gates.unsqueeze(-1)
+            next_bin = self._update_bin(bin_state, selected)
+            slot_indices = self._order_slots(selected_indices)
 
         # 3. Read the memory back into every token.
         bin_read = self.bin_cross_attention(self.norm_bin(x), next_bin)
@@ -394,7 +587,10 @@ class MemoryBlock(nn.Module):
         x = x + self.drop_path(self.ffn(self.norm_ffn(x)))
 
         aux = self._auxiliary_terms(gate, gate_prob, next_bin)
+        if prediction_loss is not None:
+            aux["prediction_loss"] = prediction_loss
         aux["selected_indices"] = selected_indices.detach()
+        aux["slot_indices"] = slot_indices.detach()
         return x, next_bin, aux
 
     def _select_candidates(self, candidates: Tensor, gate: Tensor,
@@ -419,21 +615,107 @@ class MemoryBlock(nn.Module):
         aged = bin_state * self.config.bin_decay
         return torch.cat([selected, aged], dim=1)[:, :self.config.bin_slots, :]
 
+    def _order_slots(self, selected_indices: Tensor) -> Tensor:
+        """Slot taken by each survivor under order addressing, -1 if none."""
+        batch, k = selected_indices.shape
+        if self.config.bin_update == "attention":
+            # Every slot is written softly, so no survivor owns a slot.
+            return torch.full_like(selected_indices, -1)
+        slots = torch.arange(k, device=selected_indices.device).expand(batch, k)
+        return torch.where(slots < self.config.bin_slots, slots,
+                           torch.full_like(slots, -1))
+
     def _gru_update(self, bin_state: Tensor, selected: Tensor) -> Tensor:
         batch, slots, dim = bin_state.shape
         writes = torch.zeros_like(bin_state)
         write_count = min(selected.shape[1], slots)
         writes[:, :write_count, :] = selected[:, :write_count, :]
+        write_mask = torch.zeros(batch, slots, 1, device=bin_state.device,
+                                 dtype=bin_state.dtype)
+        write_mask[:, :write_count, :] = 1.0
+        return self._gru_write(bin_state, writes, write_mask)
+
+    def _gru_write(self, bin_state: Tensor, writes: Tensor,
+                   write_mask: Tensor) -> Tensor:
+        """Gated recurrent update of the written slots; the rest only age.
+
+        memory_norm="all" normalises every slot afterwards. That is the
+        original behaviour, and it rescales the aged slots straight back,
+        undoing the decay. memory_norm="written" normalises only the freshly
+        written slots, so a slot that is not written keeps shrinking by
+        `bin_decay` at every layer and contributes less when tokens read it.
+        """
+        batch, slots, dim = bin_state.shape
         aged = bin_state * self.config.bin_decay
         updated = self.slot_gru(
             writes.reshape(batch * slots, dim),
             aged.reshape(batch * slots, dim),
         ).view(batch, slots, dim)
-        write_mask = torch.zeros(batch, slots, 1, device=bin_state.device,
-                                 dtype=bin_state.dtype)
-        write_mask[:, :write_count, :] = 1.0
+        if self.config.memory_norm == "written":
+            return write_mask * self.bin_norm(updated) + (1.0 - write_mask) * aged
         next_bin = write_mask * updated + (1.0 - write_mask) * aged
         return self.bin_norm(next_bin)
+
+    def _content_write(self, bin_state: Tensor, candidates: Tensor,
+                       gate: Tensor, score: Tensor
+                       ) -> Tuple[Tensor, Tensor, Tensor]:
+        """Write the survivors into the slots their content picks.
+
+        Survivors are taken in score order, and each claims the free slot whose
+        current content is most similar to its own (cosine). No two survivors
+        share a slot within a layer, and any of the `bin_slots` slots can be
+        written.
+
+        The write is a sum over every token, weighted by its straight-through
+        gate and a one-hot slot address. A token that did not survive has gate
+        exactly 0 in the forward pass, so the result equals writing the
+        survivors alone. Under gate_gradient="all" the backward pass still
+        reaches the scores of the tokens that were not written, each through
+        the slot it would have taken, which is what lets the gate learn from
+        tokens it did not pick. Under "selected" those contributions carry no
+        gradient, as in the original encoder.
+
+        Returns the next memory, the survivor token indices (B, k) in score
+        order, and the slot each survivor was written to (B, k).
+        """
+        batch, seq_len, dim = candidates.shape
+        slots = bin_state.shape[1]
+        k = min(self.config.survivors_per_layer, seq_len, slots)
+        selected_indices = torch.topk(score, k=k, dim=-1).indices
+
+        with torch.no_grad():
+            similarity = torch.matmul(
+                F.normalize(candidates.float(), dim=-1),
+                F.normalize(bin_state.float(), dim=-1).transpose(1, 2))
+            # Every token's preferred slot. Survivors are then reassigned so
+            # that each takes a slot no earlier survivor has claimed.
+            address = similarity.argmax(dim=-1)
+            wanted = torch.gather(
+                similarity, 1,
+                selected_indices.unsqueeze(-1).expand(-1, -1, slots))
+            taken = torch.zeros(batch, slots, dtype=torch.bool,
+                                device=candidates.device)
+            rows = torch.arange(batch, device=candidates.device)
+            slot_indices = torch.empty(batch, k, dtype=torch.long,
+                                       device=candidates.device)
+            for j in range(k):
+                pick = wanted[:, j].masked_fill(taken, float("-inf")).argmax(-1)
+                slot_indices[:, j] = pick
+                taken[rows, pick] = True
+            address = address.scatter(1, selected_indices, slot_indices)
+            one_hot = F.one_hot(address, slots).to(candidates.dtype)
+            survived = torch.zeros(batch, seq_len, dtype=candidates.dtype,
+                                   device=candidates.device).scatter(
+                1, selected_indices, 1.0)
+            # Survivors per slot, 0 or 1 since survivors never share a slot.
+            count = (one_hot * survived.unsqueeze(-1)).sum(dim=1).clamp_min(1.0)
+
+        weight = gate if self.config.gate_gradient == "all" else gate * survived
+        routed = weight.to(candidates.dtype).unsqueeze(-1) * one_hot
+        writes = torch.matmul(routed.transpose(1, 2), candidates) / count.unsqueeze(-1)
+        write_mask = (routed.sum(dim=1) / count).unsqueeze(-1)
+        next_bin = self._gru_write(bin_state, writes, write_mask)
+        return next_bin, selected_indices, slot_indices
 
     def _attention_update(self, bin_state: Tensor, selected: Tensor) -> Tensor:
         if selected.shape[1] == 0:
@@ -482,33 +764,51 @@ class MemoryEncoder(nn.Module):
             [MemoryBlock(config, drop_path_rate=rates[i]) for i in range(depth)])
         self.norm = nn.LayerNorm(config.model_dim, eps=1e-5)
 
+        # Segment of every token, for keeping the local window inside it.
+        segment_ids = None
+        if config.segment_lengths is not None:
+            lengths = torch.tensor(config.segment_lengths)
+            segment_ids = torch.repeat_interleave(
+                torch.arange(len(lengths)), lengths)
+        self.register_buffer("segment_ids", segment_ids, persistent=False)
+
     def forward(self, x: Tensor, return_trace: bool = False
-                ) -> Tuple[Tensor, Dict[str, Tensor], Optional[List[Tensor]]]:
+                ) -> Tuple[Tensor, Dict[str, Tensor],
+                           Optional[Dict[str, List[Tensor]]]]:
         """
         Args:
             x: (B, S, model_dim) token embeddings.
-            return_trace: also return the token indices written to memory at
-                each layer, for the memory write-log analysis.
+            return_trace: also return what each layer wrote to memory, for the
+                memory write-log analysis.
 
         Returns:
             x: (B, S, model_dim) encoded tokens.
             auxiliary_terms: scalar regularisation terms averaged over layers.
-            trace: list of (B, k) written token indices per layer, or None.
+            trace: None, or {"tokens": [...], "slots": [...]} with one (B, k)
+                tensor per layer: the token indices written, and the slot each
+                was written to (-1 where no single slot owns the write).
         """
-        batch = x.shape[0]
+        batch, seq_len = x.shape[:2]
+        segment_ids = self.segment_ids
+        if segment_ids is not None and segment_ids.numel() != seq_len:
+            raise ValueError(
+                f"segment_lengths {self.config.segment_lengths} cover "
+                f"{segment_ids.numel()} tokens but the input has {seq_len}")
         bin_state = self.initial_bin[None, :, :].expand(batch, -1, -1)
 
         aux_by_layer: List[Dict[str, Tensor]] = []
-        trace: List[Tensor] = []
+        trace: Dict[str, List[Tensor]] = {"tokens": [], "slots": []}
         for block in self.blocks:
-            x, bin_state, aux = block(x, bin_state)
+            x, bin_state, aux = block(x, bin_state, segment_ids)
             aux_by_layer.append(aux)
             if return_trace:
-                trace.append(aux["selected_indices"])
+                trace["tokens"].append(aux["selected_indices"])
+                trace["slots"].append(aux["slot_indices"])
 
         x = self.norm(x)
 
-        keys = [k for k in aux_by_layer[0] if k != "selected_indices"]
+        traced = {"selected_indices", "slot_indices"}
+        keys = [k for k in aux_by_layer[0] if k not in traced]
         auxiliary_terms = {
             key: torch.stack([a[key] for a in aux_by_layer]).mean()
             for key in keys

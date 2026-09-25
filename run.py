@@ -110,6 +110,13 @@ def build_plan(seeds):
         "train_a_seed0", "slim_a", 0,
         why="rectified feed-forward variant, now properly matched"))
 
+    # KA with the original memory rules, to measure what the memory fixes
+    # changed. One seed, compared against train_ka_seed0.
+    plan.append(training_stage(
+        "train_ka_legacy_seed0", "slim_ka_legacy", 0,
+        out="results/ka_legacy/seed0", minutes=150,
+        why="original memory rules: what the encoder fixes changed"))
+
     # How much of the result depends on the test cell type's own chromatin.
     plan.append(training_stage(
         "train_ga_seq_only", "slim_ga", 0,
@@ -259,12 +266,13 @@ def check_gpu():
 def check_data():
     """Confirm the three inputs are present before a long job starts."""
     print("\nData")
-    import yaml
-    config = yaml.safe_load((ROOT / "configs" / "base.yaml").read_text())
+    sys.path.insert(0, str(ROOT))
+    from src.config import load_config, resolve_track_location
+    config = load_config(str(ROOT / "configs" / "base.yaml"))
     paths = config["paths"]
     ok = True
 
-    bengi = ROOT / paths["bengi_dir"].lstrip("./")
+    bengi = Path(paths["bengi_dir"])
     wanted = ["GM12878", "HeLa", "K562", "IMR90", "HMEC", "NHEK"]
     if not bengi.exists():
         print(f"  BENGI directory missing: {bengi}")
@@ -277,14 +285,14 @@ def check_data():
             if cell not in present:
                 ok = False
 
-    feats = ROOT / paths["feats_config"].lstrip("./")
+    feats = Path(paths["feats_config"])
     if not feats.exists():
         print(f"  Track configuration missing: {feats}")
         ok = False
     else:
         import json as _json
         mapping = _json.loads(feats.read_text())
-        location = mapping.get("_location", str(feats.parent))
+        location = resolve_track_location(str(feats), mapping.get("_location"))
         absent = 0
         for cell, assays in mapping.items():
             if cell.startswith("_") or not isinstance(assays, dict):
@@ -295,11 +303,12 @@ def check_data():
                     candidate = Path(location) / filename
                 if not candidate.exists():
                     absent += 1
+        print(f"  Track directory  {location}")
         print(f"  Track config found, {absent} track file(s) missing")
         if absent:
             ok = False
 
-    genome = ROOT / paths["ref_genome"].lstrip("./")
+    genome = Path(paths["ref_genome"])
     if not genome.exists():
         print(f"  Reference genome missing: {genome}")
         print("  Without it the sequence branch reads placeholder sequences")

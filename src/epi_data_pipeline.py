@@ -32,6 +32,9 @@ from typing import Dict, List, Optional, Tuple, Union
 import torch
 from torch.utils.data import Dataset
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src.config import resolve_track_location
+
 # ---------------------------------------------------------------------------
 # hg19 chromosome sizes (for boundary checking)
 # ---------------------------------------------------------------------------
@@ -140,9 +143,13 @@ class EPIGenomicDataset(Dataset):
         # Load feature config JSON
         with open(feats_config_path, "r") as f:
             self.feats_config = json.load(f)
-        base_location = self.feats_config.pop("_location", None)
-        if base_location is None:
-            base_location = os.path.dirname(os.path.abspath(feats_config_path))
+        declared_location = self.feats_config.pop("_location", None)
+        base_location = resolve_track_location(feats_config_path,
+                                               declared_location)
+        if declared_location and os.path.normpath(
+                str(declared_location)) != os.path.normpath(base_location):
+            print(f"  Track directory '{declared_location}' from the feature "
+                  f"config is not present; reading tracks from {base_location}")
         # Resolve absolute paths for each .pt file
         for cell, assays in list(self.feats_config.items()):
             if not isinstance(assays, dict):
@@ -276,6 +283,13 @@ class EPIGenomicDataset(Dataset):
                 print(f"  WARNING: {pt_path} not found")
                 continue
             self.feats[cell][mark] = torch.load(pt_path, map_location="cpu", weights_only=False)
+        if not self.feats[cell]:
+            # Every chromatin channel would be zeros, and the run would report
+            # numbers as if nothing were wrong. Stop instead.
+            raise FileNotFoundError(
+                f"no epigenetic track files could be loaded for '{cell}'. "
+                f"Looked for the files named in the feature config under "
+                f"{os.path.dirname(next(iter(self.feats_config[cell].values())))}")
         print(f"  Loaded {len(self.feats[cell])}/{self.num_feats} marks for {cell}")
 
     # ---------------------------------------------------------------

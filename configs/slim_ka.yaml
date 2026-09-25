@@ -22,3 +22,15 @@ model:
     use_learned_score: true      # set false to isolate the other gate terms
     use_novelty: true
     use_prediction_error: true
+    # Memory behaviour (see src/memory_encoder.py). The legacy comparison run,
+    # configs/slim_ka_legacy.yaml, turns these back to the original rules.
+    slot_addressing: "content"     # survivors take the most similar free slot
+    prediction_target: "position"  # predict each token from memory + position
+    memory_norm: "written"         # normalise written slots only, so decay acts
+    respect_segments: true         # local window stops at the DNA and chromatin seams
+    # Kept at the original rule on purpose. "all" lets the task gradient reach
+    # every score, but in short real-data runs it made the gate write the same
+    # positions for every input (overlap 0.93 and 0.83 against 0.33 and 0.45
+    # for "selected", two seeds); selection_noise did not prevent that.
+    gate_gradient: "selected"
+    selection_noise: 0.0

@@ -47,6 +47,7 @@ from torch.utils.data import DataLoader, Subset
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.config import load_config
+from src.shutdown import run_main
 from src.dataset import EPIDataset
 from src.encoding import POCD_ND_Encoder
 from src.epi_data_pipeline import EPIGenomicDataset
@@ -159,6 +160,7 @@ def compute_loss(model, batch_out, labels, distances, config):
             aux,
             entropy_weight=train_cfg.get("entropy_loss_weight", 0.01),
             diversity_weight=train_cfg.get("diversity_loss_weight", 0.05),
+            prediction_weight=train_cfg.get("prediction_loss_weight", 0.0),
         )
     return loss
 
@@ -266,8 +268,18 @@ def main():
         config["training"]["lr"] = args.lr
 
     variant = config["model"].get("variant", "KA")
+    memory_cfg = config["model"].get("memory", {})
+    if (memory_cfg.get("prediction_target") == "position"
+            and config["training"].get("prediction_loss_weight", 0.0) <= 0):
+        raise ValueError(
+            "model.memory.prediction_target is 'position' but "
+            "training.prediction_loss_weight is not positive, so nothing would "
+            "train the predictor and its error would be noise.")
+    # `output_name` lets a configuration that shares a variant with another,
+    # such as the legacy KA run, keep its results in its own directory.
     save_dir = args.output_dir or os.path.join(
-        "results", str(variant).lower(), f"seed{args.seed}")
+        "results", str(config.get("output_name", variant)).lower(),
+        f"seed{args.seed}")
     os.makedirs(save_dir, exist_ok=True)
 
     set_seed(args.seed, deterministic=args.deterministic)
@@ -418,10 +430,17 @@ def main():
     # Resume from the last completed epoch if a previous run was interrupted.
     if os.path.exists(state_path) and not args.no_resume:
         saved = torch.load(state_path, map_location=device, weights_only=False)
+        saved_model_cfg = saved.get("config", {}).get("model")
         if saved.get("seed") != args.seed or saved.get("variant") != variant:
             print(f"\nFound {state_path} but it belongs to a different run "
                   f"(variant {saved.get('variant')}, seed {saved.get('seed')}). "
                   f"Starting from scratch.")
+        elif saved_model_cfg != config["model"]:
+            # Same variant and seed, but built with different model settings,
+            # for example the memory rules before a code change. Its weights
+            # would not describe the model being trained now.
+            print(f"\nFound {state_path} but it was trained with different "
+                  f"model settings. Starting from scratch.")
         else:
             model.load_state_dict(saved["model"])
             optimizer.load_state_dict(saved["optimizer"])
@@ -604,4 +623,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Exits without the Windows shutdown crash that follows GPU training;
+    # see src/shutdown.py.
+    run_main(main)

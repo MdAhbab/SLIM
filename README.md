@@ -23,18 +23,52 @@ in 500 base-pair bins, producing 500 tokens. The 628 tokens then pass through
 the encoder that this work contributes.
 
 Instead of letting every token attend to every other token, each encoder layer
-does three things. Local windowed attention mixes each token with its 64
-nearest neighbours. A survival gate then scores every token and writes the
-eight highest-scoring ones into a bounded memory of 16 slots, through a gated
-recurrent update with decay. Finally every token reads that memory back by
-cross-attention. Distant information therefore travels through a small, explicit
-memory rather than through all-to-all attention, and the selection step is
-learned rather than fixed.
+does three things. Sliding-window attention mixes each token with its 64
+nearest neighbours inside its own segment (enhancer DNA, promoter DNA, or
+chromatin), computed block by block so its cost grows linearly with length. A
+survival gate then scores every token and writes the eight highest-scoring
+ones into a bounded memory of 16 slots: each survivor claims the free slot whose
+content is most similar to its own, and a gated recurrent update writes it
+there. Slots that are not written decay. Finally every token reads that memory
+back by cross-attention. Distant information therefore travels through a small,
+explicit memory rather than through all-to-all attention, and the selection
+step is learned rather than fixed.
 
 The survival score has three parts: a learned term, a novelty term measuring how
 unlike the current memory a token is, and a prediction-error term measuring how
-poorly the memory predicts that token. Selection is discrete in the forward pass
-and differentiable in the backward pass through a straight-through estimator.
+poorly the memory predicts that token, where each token is predicted from the
+memory by a query built from its position alone and the predictor is trained by
+its own loss. Selection is discrete in the forward pass and differentiable in
+the backward pass through a straight-through estimator, written as a sum over
+every token so that the gradient reaches the scores of tokens that were not
+selected as well as those that were.
+
+### Memory fixes, and the legacy comparison
+
+The first KA results came from an encoder that did not do five of those things:
+survivors always filled slots 0 to 7 in score order, so half the memory was
+never written; local attention computed the full 628 by 628 score matrix and
+then masked it; the prediction term compared one pooled vector per sequence
+with every token, and nothing trained it; a layer norm over every slot undid the
+decay; and the local window ran across the DNA and chromatin seams. Each is now
+a switch under `model.memory` (`slot_addressing`, `prediction_target`,
+`memory_norm`, `respect_segments`), documented in `src/memory_encoder.py`, and
+the variant configurations turn them all on. `configs/slim_ka_legacy.yaml`
+turns them off, which rebuilds the original model exactly, and `run.py` trains
+it once so the effect of the fixes is measured rather than assumed. The
+sliding-window attention needs no switch: it equals the masked version to
+floating-point precision.
+
+One problem is not fixed by default. The task gradient reaches the survival
+score only at the tokens that were written, so the gate learns nothing about
+the tokens it passes over. `gate_gradient: "all"` removes that restriction
+without changing the forward pass, and `selection_noise` adds noisy top-k
+selection, the remedy the original design proposed. Both are implemented and
+tested, but in short training runs on the real data the first made the gate
+write the same positions for every input sooner (pairwise overlap 0.93 and 0.83
+on two seeds, against 0.33 and 0.45 without it) and the second did not help, so
+the configurations keep the original rule. The write-log collapse check is
+there to show whether the full-length runs stay input-driven.
 
 ## Models
 
@@ -43,12 +77,16 @@ pipeline, the optimizer and the training budget. The encoder is the only thing
 that changes, and among the three SLIM variants only the feed-forward
 sublayer inside the encoder changes.
 
-| Name     | Encoder                       | Feed-forward sublayer            | Parameters |
-| -------- | ----------------------------- | -------------------------------- | ---------: |
-| baseline | global self-attention         | spline (Kolmogorov-Arnold) layer |  3,529,796 |
-| A        | survival-gated memory encoder | rectified layer, width 720       |  4,340,255 |
-| KA       | survival-gated memory encoder | spline layer, width 64           |  4,251,155 |
-| GA       | survival-gated memory encoder | gated linear layer, width 480    |  4,340,975 |
+| Name      | Encoder                        | Feed-forward sublayer            | Parameters |
+| --------- | ------------------------------ | -------------------------------- | ---------: |
+| baseline  | global self-attention          | spline (Kolmogorov-Arnold) layer |  3,529,796 |
+| A         | survival-gated memory encoder  | rectified layer, width 720       |  4,392,095 |
+| KA        | survival-gated memory encoder  | spline layer, width 64           |  4,302,995 |
+| GA        | survival-gated memory encoder  | gated linear layer, width 480    |  4,392,815 |
+| KA legacy | original memory rules, one run | spline layer, width 64           |  4,251,155 |
+
+The memory fixes add one 180 by 96 position query per layer, 51,840 parameters
+in all, to every SLIM variant alike.
 
 Two comparisons matter, and each isolates one change:
 
@@ -103,8 +141,11 @@ tests/            run these before any long job
 ## Hardware and installation
 
 Developed and run on a single NVIDIA RTX 5070 Ti with 16 GB of video memory and
-32 GB of system memory. A batch size of 64 fits with roughly 2.5 GB to spare on
-the heaviest variant. Batch 128 exhausts memory.
+32 GB of system memory. The batch size is 32. At 64 the KA variant reserves
+about 18.7 GB, spills into shared system memory, and runs roughly 2.6 times
+slower per sample; at 32 the heaviest variant reserves under 10 GB. This card
+needs a PyTorch build for CUDA 12.8 or later, such as the cu130 wheels; older
+builds install but carry no kernels for it.
 
 ```bash
 python -m venv .venv
@@ -333,6 +374,15 @@ from the same window. The comparison is paired within each window and the null
 is built by reshuffling which bins count as written inside that same window, so
 differences in overall activity between windows cannot produce an effect.
 
+It also checks for collapse, which enrichment alone cannot detect: how often
+each position is chosen across inputs, how much two inputs' written sets
+overlap compared with random sets of the same size, and how many memory slots
+are ever written. A mean overlap of one half or more is flagged. Run it on
+`results/ka_legacy/seed0` as well. The original gate is strongly positional:
+on the first trained KA model six positions were written by at least 90
+percent of test windows, and two windows' written sets overlapped 22 times
+more than random sets of the same size would.
+
 ## Optional experiments
 
 The configuration exposes the encoder's capacity directly, so these need no new
@@ -350,7 +400,9 @@ python scripts/train.py --config configs/slim_ka.yaml --seed 0 \
 
 The gate's three scoring terms can each be switched off with
 `model.memory.use_learned_score`, `use_novelty` and `use_prediction_error`, which
-isolates their individual contributions.
+isolates their individual contributions. The memory switches described above
+can likewise be turned off one at a time to attribute the legacy comparison to
+a single fix.
 
 ## What each output file holds
 

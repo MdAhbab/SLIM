@@ -36,6 +36,7 @@ import torch.nn as nn
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.config import load_config
+from src.shutdown import run_main
 from src.slim_model import build_model
 
 CONFIG_FOR = {
@@ -246,4 +247,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Exits without the Windows shutdown crash that follows GPU training;
+    # see src/shutdown.py.
+    run_main(main)

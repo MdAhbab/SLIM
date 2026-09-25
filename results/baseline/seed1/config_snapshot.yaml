@@ -1,0 +1,77 @@
+paths:
+  bengi_dir: D:\E\AI Models\FYDP-Model\data\BENGI
+  feats_config: D:\E\AI Models\FYDP-Model\data\genomic_data\CTCF_DNase_6histone_local.500.json
+  ref_genome: D:\E\AI Models\FYDP-Model\data\hg19.fa
+data:
+  sequence_length: 6000
+  epigenetic_bins: 5000
+  n_epigenetic_features: 9
+  kmer_size: 3
+  batch_size: 32
+  bin_size: 500
+  seq_len_bp: 2500000
+  enhancer_window: 3000
+  promoter_window: 3000
+  encoder_fit_samples: 5000
+  modalities: all
+  feats_order:
+  - CTCF
+  - DNase
+  - H3K27ac
+  - H3K27me3
+  - H3K36me3
+  - H3K4me1
+  - H3K4me3
+  - H3K9me3
+model:
+  hidden_dim: 180
+  num_heads: 6
+  num_layers: 3
+  n_tokens: 128
+  dropout: 0.1
+  head_dropout: 0.2
+  kan_hidden: 64
+  sa_da: 64
+  sa_r: 32
+  att_penalty: 0.1
+  drop_path_rate: 0.0
+  variant: baseline
+training:
+  lr: 0.0001
+  epochs: 5
+  lambda_dist: 1.0
+  grad_clip: 1.0
+  patience: 15
+  weight_decay: 0.0001
+  use_cosine_scheduler: false
+  entropy_loss_weight: 0.01
+  diversity_loss_weight: 0.05
+  prediction_loss_weight: 1.0
+  use_amp: true
+  num_workers: 4
+  prefetch_factor: 2
+  persistent_workers: false
+  valid_chroms:
+  - chr11
+  - chr17
+augmentation:
+  enabled: true
+  rc_prob: 0.5
+  epi_noise_std: 0.05
+  shift_max_bins: 3
+experiment_name: baseline
+_run:
+  seed: 1
+  split: cross-cell
+  train_cells:
+  - GM12878
+  - HeLa
+  - K562
+  - IMR90
+  test_cells:
+  - HMEC
+  - NHEK
+  valid_chroms:
+  - chr11
+  - chr17
+  total_params: 3529796

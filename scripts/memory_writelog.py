@@ -18,6 +18,13 @@ memory is summarising, and the distance from each write to the enhancer and
 promoter anchors says whether the gate simply relocates to the two positions
 the task already points at.
 
+Enrichment alone cannot tell a selective gate from a collapsed one: a gate
+that writes the same positions for every input can still land on
+signal-rich bins. The collapse check therefore asks how often each position
+is chosen across inputs, and how much any two inputs' written sets overlap
+compared with sets of the same size placed at random. It also reports how
+many memory slots are ever written.
+
 Needs a trained checkpoint and the prepared dataset. One inference pass.
 
 Usage:
@@ -78,6 +85,8 @@ def collect_traces(model, loader, device, track_channel, max_batches):
         branch: counts of writes landing in each branch.
         anchor_distance: mean tokens from a write to the nearer anchor.
         histogram: how often each token position was written.
+        written_sets: per window, the distinct token positions written.
+        slot_counts: how often each memory slot was written.
     """
     n_seq = model.n_seq_tokens
     n_epi = model.n_epi_tokens
@@ -88,6 +97,8 @@ def collect_traces(model, loader, device, track_channel, max_batches):
     branch = {"sequence": 0, "chromatin": 0}
     anchor_distance = []
     histogram = np.zeros(n_seq + n_epi, dtype=np.int64)
+    written_sets = []
+    slot_counts = np.zeros(model.memory_config.bin_slots, dtype=np.int64)
 
     with torch.no_grad():
         for index, batch in enumerate(loader):
@@ -99,7 +110,11 @@ def collect_traces(model, loader, device, track_channel, max_batches):
             prom_idx = batch["prom_idx"].float().to(device)
 
             out = model(seq, epi, enh_idx, prom_idx, return_trace=True)
-            written = torch.cat(out[-1], dim=1).cpu().numpy()  # (B, layers*k)
+            trace = out[-1]
+            written = torch.cat(trace["tokens"], dim=1).cpu().numpy()  # (B, layers*k)
+            slots = torch.cat(trace["slots"], dim=1).cpu().numpy().ravel()
+            slot_counts += np.bincount(slots[slots >= 0],
+                                       minlength=slot_counts.size)
             epi_np = epi.cpu().numpy()
             enh_bins = enh_idx.view(-1).cpu().numpy()
             prom_bins = prom_idx.view(-1).cpu().numpy()
@@ -107,6 +122,7 @@ def collect_traces(model, loader, device, track_channel, max_batches):
             for i in range(written.shape[0]):
                 tokens = np.unique(written[i])
                 histogram[tokens] += 1
+                written_sets.append(tokens)
                 branch["sequence"] += int((tokens < n_seq).sum())
                 branch["chromatin"] += int((tokens >= n_seq).sum())
 
@@ -130,7 +146,70 @@ def collect_traces(model, loader, device, track_channel, max_batches):
                                      np.abs(chrom_tokens - prom_token))
                 anchor_distance.append(float(nearest.mean()))
 
-    return masks, signals, branch, anchor_distance, histogram
+    return (masks, signals, branch, anchor_distance, histogram, written_sets,
+            slot_counts)
+
+
+def selection_collapse(written_sets, n_tokens, rng, pairs=20000):
+    """How strongly the same positions win for every input.
+
+    A gate that selects by content writes different positions for different
+    inputs. A collapsed gate writes the same few positions whatever it sees.
+    Three views:
+
+      frequency  the fraction of windows that wrote each position; positions
+                 written by at least 90 percent of windows are fixed winners.
+      overlap    the Jaccard overlap between the written sets of random pairs
+                 of windows, next to the overlap of random sets of the same
+                 sizes. A ratio near one means input-driven selection; an
+                 overlap near one means every input writes the same positions.
+      entropy    of the pooled write histogram over all positions, normalised
+                 so 1 is uniform use and 0 is a single position.
+    """
+    n = len(written_sets)
+    frequency = np.zeros(n_tokens)
+    for tokens in written_sets:
+        frequency[tokens] += 1
+    frequency /= max(n, 1)
+
+    first = rng.integers(0, n, size=pairs)
+    second = rng.integers(0, n, size=pairs)
+    keep = first != second
+    first, second = first[keep], second[keep]
+    observed, null = [], []
+    for a, b in zip(first, second):
+        set_a, set_b = written_sets[a], written_sets[b]
+        observed.append(np.intersect1d(set_a, set_b).size
+                        / np.union1d(set_a, set_b).size)
+        rand_a = rng.choice(n_tokens, size=set_a.size, replace=False)
+        rand_b = rng.choice(n_tokens, size=set_b.size, replace=False)
+        null.append(np.intersect1d(rand_a, rand_b).size
+                    / np.union1d(rand_a, rand_b).size)
+    observed_mean = float(np.mean(observed)) if observed else float("nan")
+    null_mean = float(np.mean(null)) if null else float("nan")
+
+    pooled = frequency / frequency.sum() if frequency.sum() > 0 else frequency
+    nonzero = pooled[pooled > 0]
+    entropy = float(-(nonzero * np.log(nonzero)).sum() / np.log(n_tokens))
+    top = np.argsort(frequency)[::-1][:10]
+    return {
+        "n_windows": n,
+        "max_position_frequency": float(frequency.max()),
+        "fixed_winners": int((frequency >= 0.9).sum()),
+        "positions_ever_written": int((frequency > 0).sum()),
+        "mean_pairwise_jaccard": observed_mean,
+        "null_pairwise_jaccard": null_mean,
+        "jaccard_ratio": (observed_mean / null_mean if null_mean > 0
+                          else float("nan")),
+        "identical_pair_fraction": (float(np.mean(np.array(observed) == 1.0))
+                                    if observed else float("nan")),
+        "normalised_entropy": entropy,
+        "top_positions": [{"token": int(t), "frequency": float(frequency[t])}
+                          for t in top],
+        # Flag stated in advance rather than tuned: half of any two inputs'
+        # writes shared means the gate is mostly ignoring its input.
+        "collapse_warning": bool(observed_mean >= 0.5),
+    }
 
 
 def permutation_test(signals, masks, rng, permutations):
@@ -229,8 +308,9 @@ def main():
     print(f"  Tokens: {n_seq} sequence, {n_epi} chromatin")
     print(f"  Tracing up to {args.max_batches} batches")
 
-    masks, signals, branch, anchor_distance, histogram = collect_traces(
-        model, loader, device, track_channel, args.max_batches)
+    (masks, signals, branch, anchor_distance, histogram, written_sets,
+     slot_counts) = collect_traces(model, loader, device, track_channel,
+                                   args.max_batches)
 
     total = branch["sequence"] + branch["chromatin"]
     if total == 0 or not masks:
@@ -258,6 +338,27 @@ def main():
               f"{n_epi / 4:.0f} tokens.")
 
     rng = np.random.default_rng(args.seed)
+    collapse = selection_collapse(written_sets, n_seq + n_epi, rng)
+    print("\n--- Does the gate write the same positions for every input? ---")
+    print(f"  positions ever written        : "
+          f"{collapse['positions_ever_written']} of {n_seq + n_epi}")
+    print(f"  most-written position         : in "
+          f"{100 * collapse['max_position_frequency']:.1f} percent of windows")
+    print(f"  positions in >=90% of windows : {collapse['fixed_winners']}")
+    print(f"  pairwise overlap (Jaccard)    : "
+          f"{collapse['mean_pairwise_jaccard']:.3f}, against "
+          f"{collapse['null_pairwise_jaccard']:.3f} for random sets "
+          f"({collapse['jaccard_ratio']:.1f}x)")
+    print(f"  identical written sets        : "
+          f"{100 * collapse['identical_pair_fraction']:.1f} percent of pairs")
+    print(f"  write entropy (1 = uniform)   : "
+          f"{collapse['normalised_entropy']:.3f}")
+    if collapse["collapse_warning"]:
+        print("  WARNING: any two inputs share at least half their writes, so "
+              "the\n  gate is largely ignoring its input.")
+    used = int((slot_counts > 0).sum())
+    print(f"  memory slots ever written     : {used} of {slot_counts.size}")
+
     print("\n--- Chromatin signal in written versus unwritten bins ---")
     print("  Paired inside each window; the permutation test reshuffles which")
     print("  bins count as written within that same window.\n")
@@ -287,6 +388,8 @@ def main():
         "sequence_branch_enrichment": float(enrichment),
         "mean_tokens_to_nearest_anchor": mean_distance,
         "tracks": tracks,
+        "collapse": collapse,
+        "slot_write_counts": slot_counts.tolist(),
         "token_histogram": histogram.tolist(),
     }
     out_path = args.out or os.path.join(args.run, "writelog.json")

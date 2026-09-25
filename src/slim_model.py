@@ -149,6 +149,13 @@ class SLIM(nn.Module):
 
         # Survival-gated bounded-memory encoder.
         memory_cfg = model_cfg.get("memory", {})
+        # Three segments that a local window should not cross: the enhancer
+        # DNA, the promoter DNA (the sequence branch reads them concatenated,
+        # so each fills half its tokens), and the chromatin bins.
+        segment_lengths = None
+        if memory_cfg.get("respect_segments", False):
+            half = n_seq_tokens // 2
+            segment_lengths = (half, n_seq_tokens - half, self.n_epi_tokens)
         self.memory_config = MemoryConfig(
             model_dim=d_model,
             num_layers=memory_cfg.get("num_layers", depth),
@@ -170,6 +177,12 @@ class SLIM(nn.Module):
             use_learned_score=memory_cfg.get("use_learned_score", True),
             use_novelty=memory_cfg.get("use_novelty", True),
             use_prediction_error=memory_cfg.get("use_prediction_error", True),
+            slot_addressing=memory_cfg.get("slot_addressing", "order"),
+            gate_gradient=memory_cfg.get("gate_gradient", "selected"),
+            prediction_target=memory_cfg.get("prediction_target", "pooled"),
+            memory_norm=memory_cfg.get("memory_norm", "all"),
+            segment_lengths=segment_lengths,
+            selection_noise=memory_cfg.get("selection_noise", 0.0),
         )
         self.encoder = MemoryEncoder(
             self.memory_config,
@@ -203,14 +216,15 @@ class SLIM(nn.Module):
             epi: (B, n_epi, 5000) chromatin tracks plus the position channel.
             enh_idx: (B,) or (B, 1) enhancer bin index in the 5000-bin window.
             prom_idx: (B,) or (B, 1) promoter bin index.
-            return_trace: also return the token indices written to memory.
+            return_trace: also return what each layer wrote to memory.
 
         Returns:
             cls_out: (B, 1) interaction logits.
             reg_out: (B, 1) predicted log genomic distance.
             A: (B, r, S) pooling attention, for the Frobenius penalty.
             aux: survival-gate regularisation terms.
-            trace: written token indices per layer when requested.
+            trace: when requested, {"tokens": [...], "slots": [...]} with the
+                token indices written at each layer and the slots they took.
         """
         batch = seq.size(0)
 
@@ -265,15 +279,21 @@ class SLIM(nn.Module):
 
     def memory_auxiliary_loss(self, aux: Dict[str, Tensor],
                             entropy_weight: float = 0.01,
-                            diversity_weight: float = 0.05) -> Tensor:
+                            diversity_weight: float = 0.05,
+                            prediction_weight: float = 0.0) -> Tensor:
         """Regularisation for the survival gate and the memory.
 
         Gate entropy is maximised, which stops the gate collapsing onto the
         same positions every time. The slot-diversity penalty is minimised,
-        which stops the memory slots becoming copies of one another.
+        which stops the memory slots becoming copies of one another. When the
+        gate predicts each token from memory and position, the prediction loss
+        trains that predictor; it reaches no other weight.
         """
-        return (-entropy_weight * aux["gate_entropy"]
+        loss = (-entropy_weight * aux["gate_entropy"]
                 + diversity_weight * aux["slot_diversity_penalty"])
+        if "prediction_loss" in aux:
+            loss = loss + prediction_weight * aux["prediction_loss"]
+        return loss
 
 
 def build_model(config: dict) -> nn.Module:

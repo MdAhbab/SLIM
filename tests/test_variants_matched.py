@@ -11,9 +11,11 @@ These tests make that failure impossible to reintroduce quietly. They compare
 the models by structure rather than by reading the source, so any future edit
 that touches one variant and not the others fails here.
 
-The reference parameter count pins the current KA model to the one that
-produced the published results. It was taken from the archived implementation
-and confirmed to give bit-identical outputs under the same weights.
+The reference parameter counts pin two models. The legacy KA configuration
+reproduces the model that produced the published results; its count was taken
+from the archived implementation and it gives the same outputs under the same
+weights. The current KA configuration adds the memory fixes, whose token
+predictor carries a small position query in every layer.
 """
 
 import sys
@@ -28,8 +30,11 @@ from src.config import load_config
 from src.slim_model import build_model
 
 # Parameter count of the KA model that produced the published cross-cell
-# results. Changing this number means changing the published architecture.
-KA_REFERENCE_PARAMETERS = 4_251_155
+# results, rebuilt by configs/slim_ka_legacy.yaml. Changing this number means
+# the legacy configuration no longer reproduces the published architecture.
+KA_LEGACY_REFERENCE_PARAMETERS = 4_251_155
+# The same model with the memory fixes: 3 layers x a 180 x 96 position query.
+KA_REFERENCE_PARAMETERS = KA_LEGACY_REFERENCE_PARAMETERS + 3 * 180 * 96
 BASELINE_REFERENCE_PARAMETERS = 3_529_796
 
 VARIANT_CONFIG = {
@@ -51,14 +56,21 @@ def shapes_outside_ffn(model):
             if ".ffn." not in name}
 
 
-def test_ka_matches_the_published_architecture():
+def test_legacy_ka_matches_the_published_architecture():
+    model = build_model(load_config(str(ROOT / "configs/slim_ka_legacy.yaml")))
+    total = sum(p.numel() for p in model.parameters())
+    assert total == KA_LEGACY_REFERENCE_PARAMETERS, (
+        f"legacy KA now has {total:,} parameters but the published model had "
+        f"{KA_LEGACY_REFERENCE_PARAMETERS:,}, so the legacy configuration no "
+        f"longer reproduces it.")
+
+
+def test_ka_differs_from_the_published_model_only_by_the_predictor():
     model = build("KA")
     total = sum(p.numel() for p in model.parameters())
     assert total == KA_REFERENCE_PARAMETERS, (
-        f"KA now has {total:,} parameters but the published model had "
-        f"{KA_REFERENCE_PARAMETERS:,}. If this change is deliberate, the "
-        f"published results no longer describe this model and must be "
-        f"regenerated.")
+        f"KA now has {total:,} parameters, expected {KA_REFERENCE_PARAMETERS:,}: "
+        f"the published model plus one position query per layer.")
 
 
 def test_baseline_matches_the_published_architecture():

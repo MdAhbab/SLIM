@@ -2,17 +2,24 @@
 # and overrides only the keys that define the variant, so no variant can
 # accidentally differ in the data pipeline, the optimizer or the budget.
 
+# Absolute paths to the shared dataset. They are used verbatim by training,
+# testing and evaluation, so every command reads the same files no matter
+# which directory it is issued from. A relative path here would be resolved
+# against the project root instead.
 paths:
-  bengi_dir: "./data/BENGI"
-  feats_config: "./data/genomic_data/CTCF_DNase_6histone_local.500.json"
-  ref_genome: "./data/hg19.fa"
+  bengi_dir: "D:/E/AI Models/FYDP-Model/data/BENGI"
+  feats_config: "D:/E/AI Models/FYDP-Model/data/genomic_data/CTCF_DNase_6histone_local.500.json"
+  ref_genome: "D:/E/AI Models/FYDP-Model/data/hg19.fa"
 
 data:
   sequence_length: 6000      # 3000 bp enhancer plus 3000 bp promoter
   epigenetic_bins: 5000      # a 2.5 Mb window in 500 bp bins
   n_epigenetic_features: 9   # one position channel plus eight chromatin tracks
   kmer_size: 3
-  batch_size: 64             # fits a 16 GB card with headroom for the KAN variant
+  batch_size: 32             # measured to fit a 16 GB card with headroom for
+                             # every variant, the KAN one included. At 64 the
+                             # KAN variant reserves ~18.7 GB, spills into host
+                             # memory and runs about 2.6x slower per sample.
   bin_size: 500
   seq_len_bp: 2500000
   enhancer_window: 3000
@@ -52,6 +59,10 @@ training:
   use_cosine_scheduler: false
   entropy_loss_weight: 0.01      # keeps the survival gate from collapsing
   diversity_loss_weight: 0.05    # keeps memory slots distinct
+  prediction_loss_weight: 1.0     # trains the memory's token predictor. It is the
+                                 # only gradient those weights receive, so Adam
+                                 # cancels its scale; measured at 0.5 percent of
+                                 # the task gradient norm, so clipping is unaffected.
   use_amp: true
   num_workers: 4             # keeps the GPU fed without exhausting shared memory
   prefetch_factor: 2
