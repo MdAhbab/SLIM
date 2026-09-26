@@ -87,6 +87,10 @@ def build(name, seed=0, **memory):
     """Build a configuration, optionally overriding `model.memory` keys."""
     config = load_config(str(ROOT / "configs" / name))
     config["model"]["memory"].update(memory)
+    # Stochastic depth drops a whole residual branch for some samples in
+    # training mode, which zeroes their gate gradients by design. These tests
+    # measure how gradients are routed, so it is switched off here.
+    config["model"]["drop_path_rate"] = 0.0
     torch.manual_seed(seed)
     return build_model(config)
 
