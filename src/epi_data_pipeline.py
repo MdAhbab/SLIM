@@ -34,6 +34,7 @@ from torch.utils.data import Dataset
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.config import resolve_track_location
+from src.bengi import read_rows
 
 # ---------------------------------------------------------------------------
 # hg19 chromosome sizes (for boundary checking)
@@ -70,6 +71,30 @@ def _sym_log(x: torch.Tensor) -> torch.Tensor:
     return torch.sign(x) * torch.log10(1 + torch.abs(x))
 
 
+def extract_sequence(ref_genome, chrom: str, center: int, window: int) -> str:
+    """`window` bp of an open pyfaidx genome centred on `center`.
+
+    Positions past the chromosome end are padded with N. Without a genome, or
+    for an unknown chromosome, the whole window is N.
+    """
+    half = window // 2
+    start = max(0, center - half)
+    end = start + window
+    if ref_genome is not None:
+        try:
+            chrom_rec = ref_genome[chrom]
+            chrom_len = len(chrom_rec)
+            end = min(end, chrom_len)
+            seq = str(chrom_rec[start:end]).upper()
+            if len(seq) < window:
+                seq = seq + "N" * (window - len(seq))
+            return seq
+        except (KeyError, ValueError):
+            pass
+    # Fallback: N-padded dummy
+    return "N" * window
+
+
 # ===================================================================
 # Core data-loading class
 # ===================================================================
@@ -95,7 +120,7 @@ class EPIGenomicDataset(Dataset):
 
     def __init__(
         self,
-        bengi_paths: Union[str, List[str]],
+        bengi_paths: Union[str, List[str], None],
         feats_config_path: str,
         feats_order: Optional[List[str]] = None,
         seq_len: int = 2_500_000,
@@ -104,11 +129,13 @@ class EPIGenomicDataset(Dataset):
         promoter_window: int = 3000,
         ref_genome_path: Optional[str] = None,
         normalize_epi: bool = True,
+        rows: Optional[List[dict]] = None,
     ):
         """
         Parameters
         ----------
-        bengi_paths : path(s) to BENGI TSV / TSV.gz benchmark files
+        bengi_paths : path(s) to BENGI TSV / TSV.gz benchmark files, read in
+                      order. Ignored when `rows` is given.
         feats_config_path : path to the JSON mapping cell→mark→.pt file
         feats_order : ordered list of epigenetic mark names to use
         seq_len : genomic window size (bp) for epigenetic features
@@ -118,12 +145,15 @@ class EPIGenomicDataset(Dataset):
         ref_genome_path : path to hg19 FASTA (indexed). If None, returns
                           'N'-padded dummy sequences.
         normalize_epi : apply per-feature min-max normalisation
+        rows : BENGI rows already parsed by `src.bengi` (and possibly filtered
+               or deduplicated). Used instead of reading `bengi_paths`.
         """
         super().__init__()
 
         if isinstance(bengi_paths, str):
             bengi_paths = [bengi_paths]
-        self.bengi_paths = bengi_paths
+        self.bengi_paths = bengi_paths or []
+        self._rows = rows
 
         self.seq_len = int(seq_len)
         self.bin_size = int(bin_size)
@@ -214,58 +244,52 @@ class EPIGenomicDataset(Dataset):
 
     # ---------------------------------------------------------------
     def _load_datasets(self):
-        for fn in self.bengi_paths:
-            with _open_file(fn) as f:
-                for line in f:
-                    fields = [x for x in line.strip().split("\t") if x]
-                    if len(fields) < 10:
-                        continue
-                    (label, dist, chrom,
-                     enh_start, enh_end, enh_name,
-                     _prom_chrom,
-                     prom_start, prom_end, prom_name) = fields[:10]
+        # One parser for every script: src/bengi.py. Row order is file order,
+        # so row i of the test set is row i of the saved predictions.
+        rows = self._rows if self._rows is not None else read_rows(self.bengi_paths)
+        for row in rows:
+            chrom = row["chrom"]
+            cell = row["cell"]
+            enh_coord = row["enh_coord"]
+            tss_coord = row["tss_coord"]
 
-                    cell = enh_name.split("|")[1]
+            mid = (enh_coord + tss_coord) // 2
+            seq_begin = mid - self.seq_len // 2
+            seq_end = mid + self.seq_len // 2
 
-                    enh_coord = (int(enh_start) + int(enh_end)) // 2
-                    p_coords = prom_name.split("|")[0].split(":")[-1].split("-")
-                    tss_coord = (int(p_coords[0]) + int(p_coords[1])) // 2
+            enh_bin = enh_coord // self.bin_size
+            prom_bin = tss_coord // self.bin_size
+            start_bin = seq_begin // self.bin_size
+            stop_bin = seq_end // self.bin_size
 
-                    mid = (enh_coord + tss_coord) // 2
-                    seq_begin = mid - self.seq_len // 2
-                    seq_end = mid + self.seq_len // 2
+            left_pad, right_pad = 0, 0
+            if start_bin < 0:
+                left_pad = abs(start_bin)
+                start_bin = 0
+            if chrom in self.chrom_bins and stop_bin > self.chrom_bins[chrom]:
+                right_pad = stop_bin - self.chrom_bins[chrom]
+                stop_bin = self.chrom_bins[chrom]
 
-                    enh_bin = enh_coord // self.bin_size
-                    prom_bin = tss_coord // self.bin_size
-                    start_bin = seq_begin // self.bin_size
-                    stop_bin = seq_end // self.bin_size
+            self.samples.append({
+                "start_bin": start_bin,
+                "stop_bin": stop_bin,
+                "left_pad": left_pad,
+                "right_pad": right_pad,
+                "enh_bin": enh_bin,
+                "prom_bin": prom_bin,
+                "enh_coord": enh_coord,
+                "prom_coord": tss_coord,
+                "cell": cell,
+                "chrom": chrom,
+                "label": int(row["label"]),
+                "dist": float(row["dist"]),
+                "assay": row.get("assay", "unknown"),
+            })
 
-                    left_pad, right_pad = 0, 0
-                    if start_bin < 0:
-                        left_pad = abs(start_bin)
-                        start_bin = 0
-                    if chrom in self.chrom_bins and stop_bin > self.chrom_bins[chrom]:
-                        right_pad = stop_bin - self.chrom_bins[chrom]
-                        stop_bin = self.chrom_bins[chrom]
-
-                    self.samples.append({
-                        "start_bin": start_bin,
-                        "stop_bin": stop_bin,
-                        "left_pad": left_pad,
-                        "right_pad": right_pad,
-                        "enh_bin": enh_bin,
-                        "prom_bin": prom_bin,
-                        "enh_coord": enh_coord,
-                        "prom_coord": tss_coord,
-                        "cell": cell,
-                        "chrom": chrom,
-                        "label": int(label),
-                        "dist": float(dist),
-                    })
-
-                    # Lazy-load .pt files per cell line
-                    if cell not in self.feats:
-                        self._load_cell_features(cell)
+            # Lazy-load .pt files per cell line
+            if cell not in self.feats:
+                self._load_cell_features(cell)
+        self._rows = None  # the samples hold everything that is needed
 
     def _load_cell_features(self, cell: str):
         """Load all epigenetic signal .pt files for a cell line."""
@@ -357,32 +381,28 @@ class EPIGenomicDataset(Dataset):
             "epi": ar,                                           # (num_feats+1, num_bins)
             "enhancer_seq": enh_seq,                             # str
             "promoter_seq": prom_seq,                            # str
+            "chrom": chrom,                                      # str
             "label": torch.tensor([s["label"]], dtype=torch.float),
             "dist": torch.tensor([dist_scaled], dtype=torch.float),
             "enh_idx": torch.tensor([enh_idx], dtype=torch.float),
             "prom_idx": torch.tensor([prom_idx], dtype=torch.float),
         }
 
+    def sequence_pair(self, idx) -> Tuple[str, str]:
+        """Enhancer and promoter DNA of one sample, without the chromatin work.
+
+        Fitting the sequence encoder needs only the DNA, so this skips the
+        track slicing and normalisation that `__getitem__` does.
+        """
+        s = self.samples[idx]
+        return (self._extract_seq(s["chrom"], s["enh_coord"], self.enhancer_window),
+                self._extract_seq(s["chrom"], s["prom_coord"], self.promoter_window))
+
     def _extract_seq(self, chrom: str, center: int, window: int) -> str:
         """Extract a DNA sequence of `window` bp centred on `center`."""
-        half = window // 2
-        start = max(0, center - half)
-        end = start + window
         if self.ref_genome is None and self.ref_genome_path is not None:
             self._open_ref_genome()  # lazily reopen per-process (worker)
-        if self.ref_genome is not None:
-            try:
-                chrom_rec = self.ref_genome[chrom]
-                chrom_len = len(chrom_rec)
-                end = min(end, chrom_len)
-                seq = str(chrom_rec[start:end]).upper()
-                if len(seq) < window:
-                    seq = seq + "N" * (window - len(seq))
-                return seq
-            except (KeyError, ValueError):
-                pass
-        # Fallback: N-padded dummy
-        return "N" * window
+        return extract_sequence(self.ref_genome, chrom, center, window)
 
     # ---------------------------------------------------------------
     # Utility: split by chromosome for cross-validation

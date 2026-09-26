@@ -1,0 +1,14 @@
+# Ablation of variant KA: the survival score keeps only its learned term. The
+# novelty term (distance from what the memory already holds) and the
+# prediction-error term (how poorly the memory predicts the token) are
+# switched off, so the comparison with slim_ka.yaml measures what the two
+# predictive-coding terms add to the selection.
+extends: slim_ka.yaml
+
+experiment_name: "slim_ka_learned_only"
+output_name: "ka_learned_only"
+
+model:
+  memory:
+    use_novelty: false
+    use_prediction_error: false

@@ -18,6 +18,14 @@ leads to the wrong fix, so this script reports them separately.
 A model can have a small overfitting gap and a large transfer gap, which is
 the usual situation in cross-cell-line prediction.
 
+Where the training score comes from matters. Runs made with
+`training.train_eval_samples` record `train_clean_*`: a fixed training sample
+scored after each epoch exactly like validation (evaluation mode, no
+augmentation, the same weights). That is the training score used here when
+it exists. Older runs only have the running score accumulated during the
+epoch, with dropout and augmentation on and the weights still moving, which
+is not a clean comparison with validation; the report says which one it used.
+
 Reads `history.json` and `eval_results.npz` from each run directory, so it
 works on a run that is still in progress.
 
@@ -96,11 +104,17 @@ def describe(run_dir, metric):
         print("  No history.json. Train this run first.")
         return None
 
-    train_key, val_key = f"train_{metric}", f"val_{metric}"
+    clean = all(row.get(f"train_clean_{metric}") is not None for row in history)
+    source = "train_clean" if clean else "train"
+    train_key, val_key = f"{source}_{metric}", f"val_{metric}"
+    report["training_score"] = (
+        "clean training sample, scored like validation" if clean
+        else "running score during the epoch (dropout and augmentation on)")
+    print(f"  Training score: {report['training_score']}")
     epochs = [row["epoch"] for row in history]
     train = [row.get(train_key) for row in history]
     val = [row.get(val_key) for row in history]
-    train_loss = [row.get("train_loss") for row in history]
+    train_loss = [row.get(f"{source}_loss") for row in history]
     val_loss = [row.get("val_loss") for row in history]
 
     if any(v is None for v in train) or any(v is None for v in val):
@@ -120,6 +134,11 @@ def describe(run_dir, metric):
 
     best_index = int(np.argmax(val))
     best_epoch = epochs[best_index]
+    # Training keeps the epoch with the highest validation AUROC plus AUPR,
+    # which need not be the epoch with the highest AUPR alone.
+    selection = [(row.get("val_auroc") or 0.0) + (row.get("val_aupr") or 0.0)
+                 for row in history]
+    saved_epoch = epochs[int(np.argmax(selection))]
     last_index = len(epochs) - 1
 
     overfitting_gap = train[best_index] - val[best_index]
@@ -129,6 +148,7 @@ def describe(run_dir, metric):
     report.update({
         "epochs_run": len(epochs),
         "best_validation_epoch": best_epoch,
+        "checkpoint_epoch": saved_epoch,
         "best_validation_score": val[best_index],
         "train_at_best": train[best_index],
         "overfitting_gap_at_best": overfitting_gap,
@@ -186,14 +206,11 @@ def describe(run_dir, metric):
     # Verdict, stated as a reading of the numbers above.
     print("\n  Reading")
     if best_epoch < len(epochs):
-        print(f"    Validation peaked at epoch {best_epoch} and did not improve "
-              f"afterwards.")
-        print(f"    The saved checkpoint is from epoch {best_epoch}, so the "
-              f"reported result")
-        word = "epoch" if best_epoch == 1 else "epochs"
-        print(f"    does not include the later epochs. Training beyond "
-              f"{best_epoch} {word}")
-        print(f"    did not help this run.")
+        print(f"    Validation {metric.upper()} peaked at epoch {best_epoch} and "
+              f"did not improve afterwards.")
+        print(f"    The saved checkpoint (best AUROC plus AUPR) is from epoch "
+              f"{saved_epoch};")
+        print(f"    the epochs after it do not enter the reported result.")
     else:
         print(f"    Validation was still improving at the last epoch "
               f"({len(epochs)}). The budget")

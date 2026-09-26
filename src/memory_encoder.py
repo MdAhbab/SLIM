@@ -75,6 +75,19 @@ One further option addresses a failure the original design anticipated:
                        first. Evaluation always takes the plain top-k. In short
                        runs on the real data it did not reduce positional
                        collapse, so the variant configurations leave it at 0.
+
+Two options exist only for ablations that take a part of the mechanism away:
+
+    selection          "learned": survivors are the top-k survival scores.
+                       "random": survivors are k tokens drawn uniformly at
+                       random, a fresh draw for every input in training and a
+                       fixed seeded draw in evaluation, so test predictions
+                       reproduce. Tests whether the learned choice matters.
+    read_back          True: every token reads the memory back.
+                       False: the read-back is skipped, so no information
+                       travels through the memory and the encoder reduces to
+                       local attention plus the feed-forward sublayer. The
+                       modules stay in place, so checkpoint shapes match.
 """
 
 from __future__ import annotations
@@ -130,6 +143,10 @@ class MemoryConfig:
     segment_lengths: Optional[Tuple[int, ...]] = None
     selection_noise: float = 0.0
 
+    # Ablations that remove part of the mechanism; see the module docstring.
+    selection: str = "learned"
+    read_back: bool = True
+
     def __post_init__(self) -> None:
         if self.bin_update not in {"fifo", "gru", "attention"}:
             raise ValueError("bin_update must be one of: fifo, gru, attention")
@@ -149,6 +166,8 @@ class MemoryConfig:
             raise ValueError("gate_gradient='all' needs slot_addressing='content'")
         if self.selection_noise < 0:
             raise ValueError("selection_noise must be zero or positive")
+        if self.selection not in {"learned", "random"}:
+            raise ValueError("selection must be one of: learned, random")
         if self.segment_lengths is not None:
             self.segment_lengths = tuple(int(n) for n in self.segment_lengths)
             if not self.segment_lengths or min(self.segment_lengths) <= 0:
@@ -362,7 +381,9 @@ class SurvivalGate(nn.Module):
         # The scores that choose the survivors. Gumbel noise in training
         # samples the survivors instead of always taking the same top-k.
         ranking = score
-        if self.training and self.config.selection_noise > 0:
+        if self.config.selection == "random":
+            ranking = self._random_ranking(score)
+        elif self.training and self.config.selection_noise > 0:
             uniform = torch.rand_like(score).clamp(1e-6, 1.0 - 1e-6)
             ranking = score - self.config.selection_noise * torch.log(
                 -torch.log(uniform))
@@ -377,6 +398,19 @@ class SurvivalGate(nn.Module):
         }
         return (compressed, gate, gate_probability, ranking, prediction_loss,
                 debug)
+
+    def _random_ranking(self, score: Tensor) -> Tensor:
+        """Scores that pick k tokens uniformly at random.
+
+        A fresh draw per input in training. In evaluation the draw comes from
+        a generator seeded the same way at every call, so the selection is
+        random with respect to the input but identical between runs.
+        """
+        if self.training:
+            return torch.rand_like(score, dtype=torch.float32)
+        generator = torch.Generator(device="cpu").manual_seed(0)
+        draw = torch.rand(score.shape, generator=generator)
+        return draw.to(score.device)
 
     def _novelty(self, candidates: Tensor, bin_state: Tensor) -> Tensor:
         candidate_norm = F.normalize(candidates, dim=-1)
@@ -580,8 +614,9 @@ class MemoryBlock(nn.Module):
             slot_indices = self._order_slots(selected_indices)
 
         # 3. Read the memory back into every token.
-        bin_read = self.bin_cross_attention(self.norm_bin(x), next_bin)
-        x = x + self.drop_path(self.dropout(bin_read))
+        if self.config.read_back:
+            bin_read = self.bin_cross_attention(self.norm_bin(x), next_bin)
+            x = x + self.drop_path(self.dropout(bin_read))
 
         # 4. Feed-forward sublayer, the only part that differs between variants.
         x = x + self.drop_path(self.ffn(self.norm_ffn(x)))

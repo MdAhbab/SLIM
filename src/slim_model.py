@@ -54,9 +54,13 @@ def build_epi_channel_mask(n_channels: int, modalities: str,
 
     modalities:
         "all"      every channel, the default.
-        "seq"      chromatin branch input fully zeroed, so the model sees
-                   DNA sequence only.
+        "seq"      chromatin branch input fully zeroed. The model still sees
+                   DNA and, through the anchor token indices and the token
+                   positions, the geometry of the pair, so this is "DNA plus
+                   pair geometry", not DNA alone.
         "seq+pos"  position channel kept, all chromatin tracks zeroed.
+        "epi"      every chromatin channel kept; the DNA branch is switched
+                   off instead (see `sequence_input_scale`).
 
     `keep_tracks` optionally restricts which chromatin tracks survive, for
     reintroducing marks one at a time.
@@ -67,8 +71,8 @@ def build_epi_channel_mask(n_channels: int, modalities: str,
     mask[0, 0, 0] = 1.0  # the position channel
     if modalities == "seq+pos":
         return mask
-    if modalities != "all":
-        raise ValueError("modalities must be one of: all, seq, seq+pos")
+    if modalities not in {"all", "epi"}:
+        raise ValueError("modalities must be one of: all, seq, seq+pos, epi")
     if keep_tracks is None:
         mask[:] = 1.0
         return mask
@@ -79,6 +83,11 @@ def build_epi_channel_mask(n_channels: int, modalities: str,
         if i < n_channels and name in keep_tracks:
             mask[0, i, 0] = 1.0
     return mask
+
+
+def sequence_input_scale(modalities: str) -> Tensor:
+    """(1, 1, 1) factor on the DNA branch input: 0 when modalities is "epi"."""
+    return torch.full((1, 1, 1), 0.0 if modalities == "epi" else 1.0)
 
 
 class SLIM(nn.Module):
@@ -142,6 +151,11 @@ class SLIM(nn.Module):
             ),
             persistent=True,
         )
+        # Not persistent, so checkpoints saved before the "epi" option load
+        # unchanged; it is rebuilt from the config every time.
+        self.register_buffer("seq_input_scale",
+                             sequence_input_scale(self.modalities),
+                             persistent=False)
 
         total_tokens = n_seq_tokens + self.n_epi_tokens
         self.proj_drop = nn.Dropout(drop)
@@ -183,6 +197,8 @@ class SLIM(nn.Module):
             memory_norm=memory_cfg.get("memory_norm", "all"),
             segment_lengths=segment_lengths,
             selection_noise=memory_cfg.get("selection_noise", 0.0),
+            selection=memory_cfg.get("selection", "learned"),
+            read_back=memory_cfg.get("read_back", True),
         )
         self.encoder = MemoryEncoder(
             self.memory_config,
@@ -228,6 +244,7 @@ class SLIM(nn.Module):
         """
         batch = seq.size(0)
 
+        seq = seq * self.seq_input_scale.to(seq.dtype)
         x_seq = self.seq_cnn(seq).permute(0, 2, 1)
         x_seq, _ = self.seq_bilstm(x_seq)
         x_seq = self.seq_drop(x_seq)

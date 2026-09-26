@@ -20,6 +20,9 @@ That is the whole workflow. Other useful forms:
     python run.py --redo train_a_seed0
                                    mark a stage unfinished so it runs again
     python run.py --dry-run        print the plan without running anything
+    python run.py --archive before_pipeline_fixes
+                                   move every existing result into
+                                   results/archive/<name>/ and start afresh
 
 Progress lives in `results/run_state.json`. Every stage also writes its console
 output to `results/logs/<stage>.log`, so a failure can be read afterwards.
@@ -64,10 +67,21 @@ REQUIRED_PACKAGES = [
 # The plan
 # ---------------------------------------------------------------------------
 
-def training_stage(name, config, seed, extra=(), out=None, minutes=120,
-                   why="training run"):
+PROTOCOL = "results/protocol.json"
+
+
+def training_stage(name, config, seed, extra=(), out=None, minutes=80,
+                   why="training run", protocol=True):
+    """One call of scripts/train.py.
+
+    With `protocol`, the run applies the training assays and inputs that the
+    pilot runs chose (results/protocol.json), so every model and ablation
+    trains under the same protocol.
+    """
     command = [PY, "scripts/train.py", "--config", f"configs/{config}.yaml",
                "--seed", str(seed), *extra]
+    if protocol:
+        command += ["--protocol", PROTOCOL]
     if out:
         command += ["--output-dir", out]
         produces = f"{out}/eval_results.npz"
@@ -79,21 +93,66 @@ def training_stage(name, config, seed, extra=(), out=None, minutes=120,
             "minutes": minutes, "resumable": True, "why": why}
 
 
-def build_plan(seeds):
+# The four pilot runs: variant KA at seed 0, crossing the two protocol
+# choices. Each is validated on the same Hi-C rows.
+PILOTS = [
+    ("pilot_hic_dna", ["--train-assays", "HiC", "--modalities", "all"], 75,
+     "Hi-C training rows, DNA branch on"),
+    ("pilot_hic_nodna", ["--train-assays", "HiC", "--modalities", "epi"], 65,
+     "Hi-C training rows, DNA branch off"),
+    ("pilot_all_dna", ["--train-assays", "all", "--modalities", "all"], 130,
+     "every assay, repeats merged, DNA branch on"),
+    ("pilot_all_nodna", ["--train-assays", "all", "--modalities", "epi"], 110,
+     "every assay, repeats merged, DNA branch off"),
+]
+
+
+def writelog_stage(run):
+    name = run.replace("results/", "").replace("/seed0", "")
+    return {"name": f"writelog_{name}",
+            "command": [PY, "scripts/memory_writelog.py", "--run", run],
+            "produces": f"{run}/writelog.json", "minutes": 30,
+            "why": "do the selected positions carry regulatory signal"}
+
+
+def build_plan(seeds, extra_seeds=(3, 4)):
     plan = [
         {"name": "tests",
          "command": [PY, "-m", "pytest", "-q"],
-         "produces": None, "minutes": 1,
+         "produces": None, "minutes": 2,
          "why": "catch a broken checkout before spending hours on training"},
+        {"name": "audit_dataset",
+         "command": [PY, "scripts/audit_dataset.py", "--out", "results/audit"],
+         "produces": "results/audit/dataset_audit.json", "minutes": 2,
+         "why": "repeats, anchor reuse, distance-only and locus baselines"},
+        {"name": "audit_encoder",
+         "command": [PY, "scripts/audit_encoder_leakage.py",
+                     "--out", "results/audit/encoder_leakage.json"],
+         "produces": "results/audit/encoder_leakage.json", "minutes": 20,
+         "why": "does the sequence encoding leak training labels"},
+    ]
+
+    # Protocol pilots, then the choice, made on validation only.
+    for name, extra, minutes, why in PILOTS:
+        plan.append(training_stage(name, "slim_ka", 0, extra=extra,
+                                   out=f"results/{name}", minutes=minutes,
+                                   why=f"pilot: {why}", protocol=False))
+    plan.append(
+        {"name": "choose_protocol",
+         "command": [PY, "scripts/choose_protocol.py", "--pilots",
+                     *[f"results/{name}" for name, *_ in PILOTS],
+                     "--out", PROTOCOL],
+         "produces": PROTOCOL, "minutes": 1,
+         "why": "pick the protocol on Hi-C validation; test is not read"})
+    plan.append(
         {"name": "leakage",
          "command": [PY, "scripts/audit_leakage.py",
                      "--config", "configs/slim_ka.yaml",
-                     "--out", "results/leakage"],
+                     "--protocol", PROTOCOL, "--out", "results/leakage"],
          "produces": "results/leakage/leakage_index.npz", "minutes": 2,
-         "why": "processor only, and it can change how the results are read"},
-    ]
+         "why": "test loci shared with the training territory"})
 
-    # The three models that carry the claims, at every seed.
+    # Every model at the first seeds, under the chosen protocol.
     for seed in seeds:
         plan.append(training_stage(
             f"train_baseline_seed{seed}", "baseline", seed,
@@ -102,30 +161,42 @@ def build_plan(seeds):
             f"train_ka_seed{seed}", "slim_ka", seed,
             why="matched to the baseline; carries the central claim"))
         plan.append(training_stage(
-            f"train_ga_seed{seed}", "slim_ga", seed,
-            why="gated feed-forward variant, rebuilt from scratch"))
+            f"train_ga_seed{seed}", "slim_ga", seed, minutes=40,
+            why="gated feed-forward variant"))
+        plan.append(training_stage(
+            f"train_a_seed{seed}", "slim_a", seed, minutes=40,
+            why="rectified feed-forward variant"))
 
-    # Variant A is a secondary ablation, so one seed.
+    # Ablations, all variant KA at seed 0 under the chosen protocol.
     plan.append(training_stage(
-        "train_a_seed0", "slim_a", 0,
-        why="rectified feed-forward variant, now properly matched"))
-
-    # KA with the original memory rules, to measure what the memory fixes
-    # changed. One seed, compared against train_ka_seed0.
+        "train_ka_old_recipe_seed0", "slim_ka_old_recipe", 0,
+        out="results/ka_old_recipe/seed0", minutes=70,
+        why="fixed data, original training recipe: what the recipe changed"))
     plan.append(training_stage(
         "train_ka_legacy_seed0", "slim_ka_legacy", 0,
-        out="results/ka_legacy/seed0", minutes=150,
+        out="results/ka_legacy/seed0",
         why="original memory rules: what the encoder fixes changed"))
+    plan.append(training_stage(
+        "train_ka_dna_geometry", "slim_ka", 0,
+        extra=["--modalities", "seq"], out="results/ka_dna_geometry/seed0",
+        why="no chromatin tracks: DNA plus pair geometry only"))
+    for config, why in (
+            ("slim_ka_random_select", "survivors chosen at random"),
+            ("slim_ka_no_readback", "memory never read back: local attention only"),
+            ("slim_ka_learned_only", "no novelty or prediction-error term")):
+        short = config.replace("slim_", "")
+        plan.append(training_stage(
+            f"train_{short}_seed0", config, 0, out=f"results/{short}/seed0",
+            why=f"memory ablation: {why}"))
 
-    # How much of the result depends on the test cell type's own chromatin.
-    plan.append(training_stage(
-        "train_ga_seq_only", "slim_ga", 0,
-        extra=["--modalities", "seq"], out="results/ga_seq_only",
-        why="sequence alone: how much comes from the chromatin tracks"))
-    plan.append(training_stage(
-        "train_ga_seq_pos", "slim_ga", 0,
-        extra=["--modalities", "seq+pos"], out="results/ga_seq_pos",
-        why="sequence plus position, with the tracks removed"))
+    # More seeds for the central comparison.
+    for seed in extra_seeds:
+        plan.append(training_stage(
+            f"train_baseline_seed{seed}", "baseline", seed,
+            why="extra seed for the central comparison"))
+        plan.append(training_stage(
+            f"train_ka_seed{seed}", "slim_ka", seed,
+            why="extra seed for the central comparison"))
 
     plan += [
         {"name": "efficiency",
@@ -153,11 +224,9 @@ def build_plan(seeds):
                      "--out", "results/seed_summary.json"],
          "produces": "results/seed_summary.json", "minutes": 1,
          "why": "per-seed values, means and standard deviations"},
-        {"name": "writelog",
-         "command": [PY, "scripts/memory_writelog.py",
-                     "--run", "results/ga/seed0"],
-         "produces": "results/ga/seed0/writelog.json", "minutes": 30,
-         "why": "do the selected positions carry real regulatory signal"},
+        writelog_stage("results/ka/seed0"),
+        writelog_stage("results/ka_legacy/seed0"),
+        writelog_stage("results/ga/seed0"),
         {"name": "figures",
          "command": [PY, "scripts/build_results.py", "--seed", "0",
                      "--figdir", "figures"],
@@ -165,6 +234,31 @@ def build_plan(seeds):
          "why": "tables and figures, regenerated from the saved predictions"},
     ]
     return plan
+
+
+def archive_results(name):
+    """Move every current result into results/archive/<name>/.
+
+    Tracked and untracked files alike (predictions, histories, reports, logs,
+    checkpoints and the progress record), so the next run starts from a
+    clean results directory and no stage is skipped because an old output
+    already exists.
+    """
+    target = RESULTS / "archive" / name
+    if target.exists():
+        print(f"  {target.relative_to(ROOT)} already exists; choose another name.")
+        return False
+    entries = [e for e in RESULTS.iterdir() if e.name != "archive"] \
+        if RESULTS.exists() else []
+    if not entries:
+        print("  Nothing to archive.")
+        return True
+    target.mkdir(parents=True)
+    for entry in sorted(entries):
+        shutil.move(str(entry), str(target / entry.name))
+        print(f"  moved {entry.name}")
+    print(f"  {len(entries)} entries are now in {target.relative_to(ROOT)}")
+    return True
 
 
 def expand_auto_runs(command):
@@ -407,9 +501,9 @@ def show_plan(plan, state):
         if status != "done":
             total += stage["minutes"]
         why = stage.get("why", "")
-        print(f"{stage['name']:<24}{status:<10}{stage['minutes']:>7} min   {why}")
-    print("-" * 78)
-    print(f"{'remaining':<24}{'':<10}{total:>7} min   "
+        print(f"{stage['name']:<32}{status:<10}{stage['minutes']:>7} min   {why}")
+    print("-" * 86)
+    print(f"{'remaining':<32}{'':<10}{total:>7} min   "
           f"about {total / 60:.1f} hours")
 
 
@@ -427,7 +521,12 @@ def main():
     parser.add_argument("--redo", metavar="STAGE", action="append",
                         help="mark a stage unfinished so it runs again")
     parser.add_argument("--seeds", nargs="+", type=int, default=[0, 1, 2],
-                        help="seeds for the three main models")
+                        help="seeds for every model")
+    parser.add_argument("--extra-seeds", nargs="*", type=int, default=[3, 4],
+                        help="further seeds for the baseline and KA only")
+    parser.add_argument("--archive", metavar="NAME",
+                        help="move all existing results to "
+                             "results/archive/NAME/ and stop")
     parser.add_argument("--dry-run", action="store_true",
                         help="print what would run, without running it")
     parser.add_argument("--skip-checks", action="store_true",
@@ -442,7 +541,10 @@ def main():
     print(f"  Started    {datetime.now():%Y-%m-%d %H:%M}")
     print()
 
-    plan = build_plan(args.seeds)
+    if args.archive:
+        return 0 if archive_results(args.archive) else 1
+
+    plan = build_plan(args.seeds, args.extra_seeds)
     state = load_state()
 
     if args.redo:
@@ -533,7 +635,7 @@ def main():
     print("\n" + "=" * 78)
     print(f"  Finished in {timedelta(seconds=int(elapsed))}")
     print("=" * 78)
-    show_plan(build_plan(args.seeds), load_state())
+    show_plan(build_plan(args.seeds, args.extra_seeds), load_state())
 
     if failures:
         print(f"\n  Stages that failed: {', '.join(failures)}")

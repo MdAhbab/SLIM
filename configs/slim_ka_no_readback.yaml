@@ -1,0 +1,12 @@
+# Ablation of variant KA: the memory is never read back, so no information
+# travels through it and the encoder reduces to windowed local attention plus
+# the spline feed-forward layer. The comparison with slim_ka.yaml measures
+# what the bounded memory adds on top of local attention.
+extends: slim_ka.yaml
+
+experiment_name: "slim_ka_no_readback"
+output_name: "ka_no_readback"
+
+model:
+  memory:
+    read_back: false

@@ -1,0 +1,12 @@
+# Ablation of variant KA: survivors chosen at random instead of by the
+# survival gate. Everything else, the memory and its read-back included, is
+# unchanged, so the comparison with slim_ka.yaml measures what the learned
+# selection adds over writing arbitrary positions into the same memory.
+extends: slim_ka.yaml
+
+experiment_name: "slim_ka_random_select"
+output_name: "ka_random_select"
+
+model:
+  memory:
+    selection: "random"

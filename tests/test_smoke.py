@@ -188,7 +188,8 @@ def test_calibration_and_bootstrap_return_sane_values():
 
 def test_config_inheritance_merges_without_losing_defaults():
     merged = load_config(str(ROOT / "configs/slim_ga.yaml"))
+    base = load_config(str(ROOT / "configs/base.yaml"))
     assert merged["model"]["variant"] == "GA"
-    assert merged["training"]["epochs"] == 5          # inherited from base
+    assert merged["training"]["epochs"] == base["training"]["epochs"]
     assert merged["data"]["n_epigenetic_features"] == 9
     assert merged["model"]["memory"]["bin_slots"] == 16

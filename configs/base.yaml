@@ -24,8 +24,26 @@ data:
   seq_len_bp: 2500000
   enhancer_window: 3000
   promoter_window: 3000
-  encoder_fit_samples: 5000
-  modalities: "all"          # all | seq | seq+pos
+  encoder_fit_samples: 5000  # per chromosome half under crossfit
+  encoder_fit: "crossfit"    # crossfit | train. The sequence encoding is fitted
+                             # on labelled sequences. "train" (the original
+                             # rule) fits it on training rows that are then
+                             # trained on, so those rows carry their own label
+                             # into their encoding. "crossfit" fits one encoder
+                             # per chromosome half (odd, even) and encodes every
+                             # row with the encoder of the other half.
+  modalities: "all"          # all | seq | seq+pos | epi (no DNA branch)
+  # Which training rows are used. BENGI gives GM12878 and HeLa three assay
+  # files each (HiC, CTCF-ChIAPET, RNAPII-ChIAPET), while the test cell lines
+  # have Hi-C only. ChIA-PET positives are much closer together (median 31 kb
+  # against 90-230 kb for Hi-C), so mixing them teaches a distance rule that
+  # does not hold on the test assay (scripts/audit_dataset.py). The pilot runs
+  # choose between these on Hi-C validation; see scripts/choose_protocol.py.
+  train_assays:              # empty for every assay
+    - "HiC"
+  dedup: "union"             # none | union. union merges rows that repeat one
+                             # (cell, enhancer, transcript start) pair across
+                             # assay files, labelled positive if any file is.
   feats_order:
     - "CTCF"
     - "DNase"
@@ -47,15 +65,25 @@ model:
   sa_da: 64                  # pooling attention hidden width
   sa_r: 32                   # pooling attention heads
   att_penalty: 0.1           # Frobenius penalty keeping pooling heads distinct
-  drop_path_rate: 0.0
+  drop_path_rate: 0.1        # stochastic depth, same for every encoder
 
 training:
-  lr: 0.0001
-  epochs: 5                  # the budget every reported model shares
+  lr: 0.0001                 # peak learning rate
+  epochs: 8                  # the most any run may train; early stopping ends
+                             # most runs sooner
   lambda_dist: 1.0           # weight of the distance regression loss
   grad_clip: 1.0
-  patience: 15
-  weight_decay: 0.0001       # identical for every variant
+  patience: 2                # epochs without a better validation score; the
+                             # weight average keeps validation smooth enough
+  weight_decay: 0.05         # identical for every variant
+  no_decay_1d: true          # biases and normalisation scales are not decayed
+  scheduler: "warmup_cosine" # linear warm-up, then cosine to min_lr_ratio
+  warmup_fraction: 0.03
+  min_lr_ratio: 0.05
+  ema_decay: 0.999           # validate, select and test an average of the
+                             # weights; 0 switches it off
+  train_eval_samples: 10000  # fixed training sample scored like validation
+                             # each epoch, for a clean overfitting gap
   use_cosine_scheduler: false
   entropy_loss_weight: 0.01      # keeps the survival gate from collapsing
   diversity_loss_weight: 0.05    # keeps memory slots distinct
@@ -70,9 +98,14 @@ training:
   valid_chroms:              # held out for validation inside the training cells
     - "chr11"
     - "chr17"
+  valid_assays:              # validation scored on the test assay only, so
+    - "HiC"                  # checkpoint selection rewards what the test asks
 
 augmentation:
   enabled: true
   rc_prob: 0.5               # reverse complement
+  rc_mode: "segment"         # each sequence in place, enhancer kept first
   epi_noise_std: 0.05        # Gaussian noise on chromatin channels
   shift_max_bins: 3          # random bin shift
+  shift_mode: "tracks"       # chromatin tracks only, zero-filled; the position
+                             # channel stays aligned with the anchors

@@ -18,17 +18,25 @@ which every downstream analysis reads instead of re-running the model.
 
 Training resumes automatically. After every epoch the full training state is
 written to `last.pt` in the output directory: weights, optimizer, scheduler,
-gradient scaler, epoch number, history and early-stopping counters. If the run
-is interrupted, starting the same command again continues from the epoch after
-the last completed one, so a power cut costs one epoch rather than the whole
-run. Pass --no-resume to ignore an existing `last.pt` and start over.
+gradient scaler, weight average, epoch number, history and early-stopping
+counters. If the run is interrupted, starting the same command again continues
+from the epoch after the last completed one, so a power cut costs one epoch
+rather than the whole run. Pass --no-resume to ignore an existing `last.pt` and
+start over.
+
+Which rows are trained on, and how, is set in the configuration (see
+configs/base.yaml): `data.train_assays` and `training.valid_assays` choose the
+BENGI assays for training and validation, `data.dedup` merges repeated pairs,
+and `data.encoder_fit: crossfit` keeps the supervised sequence encoder from
+seeing the labels of the examples it encodes. `--protocol` applies the
+training assays and inputs chosen by the pilot runs (scripts/choose_protocol.py).
 """
 
 from __future__ import annotations
 
 import argparse
-import glob
 import json
+import math
 import os
 import pickle
 import random
@@ -42,14 +50,16 @@ import torch.nn as nn
 import torch.optim as optim
 import yaml
 from torch.amp import GradScaler, autocast
+from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from torch.utils.data import DataLoader, Subset
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from src.bengi import bengi_files, read_rows, select_rows_for_config
 from src.config import load_config
 from src.shutdown import run_main
 from src.dataset import EPIDataset
-from src.encoding import POCD_ND_Encoder
+from src.encoding import CrossFitEncoder, POCD_ND_Encoder, chromosome_half
 from src.epi_data_pipeline import EPIGenomicDataset
 from src.slim_model import build_model
 from src.metrics import compute_all_metrics, format_epoch_line, format_metrics_report
@@ -71,8 +81,16 @@ def parse_args():
                    help="force deterministic kernels; slower, and some "
                         "operations have no deterministic implementation")
     p.add_argument("--modalities", default=None,
-                   choices=["all", "seq", "seq+pos"],
-                   help="which inputs the chromatin branch may see")
+                   choices=["all", "seq", "seq+pos", "epi"],
+                   help="which inputs the model may see: seq and seq+pos "
+                        "remove chromatin tracks, epi removes the DNA branch")
+    p.add_argument("--train-assays", nargs="+", default=None,
+                   help="BENGI assays to train on, e.g. HiC; 'all' keeps every "
+                        "assay. Overrides data.train_assays and --protocol")
+    p.add_argument("--protocol", default=None,
+                   help="JSON written by scripts/choose_protocol.py; applies "
+                        "its training assays and inputs before the other "
+                        "command-line overrides")
     p.add_argument("--split", default="cross-cell",
                    choices=["cross-cell", "loco"],
                    help="cross-cell holds out whole cell lines; loco holds out "
@@ -120,16 +138,82 @@ def seed_worker(worker_id: int) -> None:
     random.seed(worker_seed)
 
 
-def filter_bengi_files(bengi_dir, cell_names):
-    """Collect the BENGI benchmark files belonging to the named cell lines."""
-    files = sorted(glob.glob(os.path.join(bengi_dir, "*.tsv*")))
-    keep = []
-    for path in files:
-        base = os.path.basename(path)
-        cell = base.split(".")[0]
-        if cell in cell_names:
-            keep.append(path)
-    return keep
+def held_out_chroms(args, config):
+    """Chromosomes held out for validation under the chosen split."""
+    if args.split == "loco":
+        return {args.loco_chrom}
+    return set(config["training"].get("valid_chroms", ["chr11", "chr17"]))
+
+
+def apply_protocol(config, path):
+    """Apply the training assays and inputs chosen by the pilot runs."""
+    with open(path) as handle:
+        protocol = json.load(handle)
+    config["data"]["train_assays"] = protocol.get("train_assays")
+    config["data"]["modalities"] = protocol.get("modalities", "all")
+    config["protocol"] = {"file": str(path),
+                          "train_assays": protocol.get("train_assays"),
+                          "modalities": protocol.get("modalities", "all"),
+                          "chosen": protocol.get("chosen")}
+    return config
+
+
+def fit_sequence_encoder(train_genomic, train_idx, config, seed):
+    """Fit the POCD-ND encoder on training sequences.
+
+    data.encoder_fit "train" (the original rule): one encoder fitted on up to
+    `encoder_fit_samples` positives and as many negatives drawn from the
+    training rows, which are then trained on. Those rows are encoded with
+    densities that counted their own labels.
+
+    data.encoder_fit "crossfit": one encoder per chromosome half (odd and even
+    numbers), each fitted on the training rows of its own half and used to
+    encode the rows of the OTHER half, so no row is encoded with statistics
+    that include its own label. Validation and test rows follow the same rule.
+    """
+    k = config["data"]["kmer_size"]
+    seq_len = config["data"]["sequence_length"]
+    max_fit = config["data"].get("encoder_fit_samples", 5000)
+    mode = config["data"].get("encoder_fit", "train")
+    labels_all = train_genomic.get_labels()
+    rng = np.random.default_rng(seed)
+
+    fitted = []
+
+    def draw(pool):
+        pool = list(pool)
+        pos = [i for i in pool if labels_all[i] == 1]
+        neg = [i for i in pool if labels_all[i] == 0]
+        pos = rng.choice(pos, size=min(max_fit, len(pos)), replace=False) if pos else []
+        neg = rng.choice(neg, size=min(max_fit, len(neg)), replace=False) if neg else []
+        fitted.extend(int(i) for i in list(pos) + list(neg))
+        join = lambda i: "".join(train_genomic.sequence_pair(int(i)))
+        return [join(i) for i in pos], [join(i) for i in neg]
+
+    if mode == "train":
+        pos_seqs, neg_seqs = draw(train_idx)
+        encoder = POCD_ND_Encoder(k=k)
+        encoder.fit(pos_seqs, neg_seqs, seq_len)
+        print(f"  Encoder fitted on {len(pos_seqs)} positive and "
+              f"{len(neg_seqs)} negative training sequences (these rows are "
+              f"then trained on).")
+        encoder.fit_rows = sorted(fitted)
+        return encoder
+    if mode != "crossfit":
+        raise ValueError("data.encoder_fit must be train or crossfit")
+    chroms = train_genomic.get_chrom_groups()
+    pos_by_half, neg_by_half = [], []
+    for half in (0, 1):
+        pool = [i for i in train_idx if chromosome_half(chroms[i]) == half]
+        pos_seqs, neg_seqs = draw(pool)
+        pos_by_half.append(pos_seqs)
+        neg_by_half.append(neg_seqs)
+        print(f"  Chromosome half {half}: fitted on {len(pos_seqs)} positive "
+              f"and {len(neg_seqs)} negative sequences; encodes the other half.")
+    encoder = CrossFitEncoder(k=k)
+    encoder.fit(pos_by_half, neg_by_half, seq_len)
+    encoder.fit_rows = sorted(fitted)
+    return encoder
 
 
 def forward_model(model, seq, epi, enh_idx, prom_idx):
@@ -197,6 +281,76 @@ def evaluate_loader(model, loader, device, config, use_amp=False):
     return metrics
 
 
+def build_optimizer(model, config):
+    """AdamW, optionally sparing one-dimensional parameters from weight decay.
+
+    training.no_decay_1d true exempts biases and normalisation scales, the
+    usual practice; false (the original rule) decays every parameter.
+    """
+    train_cfg = config["training"]
+    decay = train_cfg.get("weight_decay", 1e-4)
+    if not train_cfg.get("no_decay_1d", False):
+        return optim.AdamW(model.parameters(), lr=train_cfg["lr"], weight_decay=decay)
+    with_decay, without = [], []
+    for param in model.parameters():
+        if param.requires_grad:
+            (with_decay if param.ndim >= 2 else without).append(param)
+    return optim.AdamW([{"params": with_decay, "weight_decay": decay},
+                        {"params": without, "weight_decay": 0.0}],
+                       lr=train_cfg["lr"])
+
+
+def build_scheduler(optimizer, config, steps_per_epoch):
+    """Learning-rate schedule named by training.scheduler.
+
+    "plateau" (the original default) halves the rate after five epochs without
+    improvement, which never happens inside a short budget. "cosine_restarts"
+    is the original alternative. "warmup_cosine" warms up linearly over
+    `warmup_fraction` of all steps, then follows a cosine down to
+    `min_lr_ratio` of the peak at the end of the epoch budget; it is stepped
+    after every batch. Returns the scheduler and whether it steps per batch.
+    """
+    train_cfg = config["training"]
+    name = train_cfg.get("scheduler")
+    if name is None:
+        name = "cosine_restarts" if train_cfg.get("use_cosine_scheduler") else "plateau"
+    if name == "plateau":
+        return optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="max", factor=0.5, patience=5), False
+    if name == "cosine_restarts":
+        return optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer, T_0=5, T_mult=2), False
+    if name != "warmup_cosine":
+        raise ValueError("training.scheduler must be plateau, cosine_restarts "
+                         "or warmup_cosine")
+    total = max(1, steps_per_epoch * train_cfg["epochs"])
+    warmup = max(1, int(train_cfg.get("warmup_fraction", 0.03) * total))
+    floor = train_cfg.get("min_lr_ratio", 0.05)
+
+    def factor(step):
+        if step < warmup:
+            return (step + 1) / warmup
+        progress = min(1.0, (step - warmup) / max(1, total - warmup))
+        return floor + (1.0 - floor) * 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    return optim.lr_scheduler.LambdaLR(optimizer, factor), True
+
+
+def build_weight_average(model, config):
+    """Exponential moving average of the weights, or None when switched off.
+
+    With training.ema_decay above zero, validation, checkpoint selection and
+    the final test all use the averaged weights, which change more smoothly
+    than the raw ones and so depend less on where an epoch happens to end.
+    Buffers (the batch-norm statistics) are averaged too.
+    """
+    decay = config["training"].get("ema_decay", 0.0)
+    if not decay:
+        return None
+    return AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(decay),
+                         use_buffers=True)
+
+
 def build_splits(train_genomic, args, config):
     """Return train and validation indices for the chosen protocol.
 
@@ -207,10 +361,7 @@ def build_splits(train_genomic, args, config):
     leave-one-chromosome-out protocol used in the chromosome-aware literature.
     """
     chroms = train_genomic.get_chrom_groups()
-    if args.split == "loco":
-        held = {args.loco_chrom}
-    else:
-        held = set(config["training"].get("valid_chroms", ["chr11", "chr17"]))
+    held = held_out_chroms(args, config)
     train_idx = [i for i, c in enumerate(chroms) if c not in held]
     val_idx = [i for i, c in enumerate(chroms) if c in held]
     if not val_idx:
@@ -256,10 +407,15 @@ def main():
     args = parse_args()
     config = load_config(args.config)
 
+    if args.protocol is not None:
+        config = apply_protocol(config, args.protocol)
     if args.variant is not None:
         config["model"]["variant"] = args.variant
     if args.modalities is not None:
         config["data"]["modalities"] = args.modalities
+    if args.train_assays is not None:
+        config["data"]["train_assays"] = (
+            None if args.train_assays == ["all"] else args.train_assays)
     if args.epochs is not None:
         config["training"]["epochs"] = args.epochs
     if args.batch_size is not None:
@@ -321,8 +477,8 @@ def main():
     feats_config = paths.get("feats_config", "")
     ref_genome = paths.get("ref_genome", "") or None
 
-    train_files = filter_bengi_files(bengi_dir, args.train_cells)
-    test_files = filter_bengi_files(bengi_dir, args.test_cells)
+    train_files = bengi_files(bengi_dir, args.train_cells)
+    test_files = bengi_files(bengi_dir, args.test_cells)
     if not train_files:
         raise FileNotFoundError(
             f"no BENGI files for training cells {args.train_cells} in {bengi_dir}")
@@ -340,35 +496,32 @@ def main():
         ref_genome_path=ref_genome,
     )
     print("\n=== Loading training data ===")
-    train_genomic = EPIGenomicDataset(bengi_paths=train_files, **ds_kwargs)
+    held = held_out_chroms(args, config)
+    train_rows, row_report = select_rows_for_config(
+        read_rows(train_files), held, config)
+    print(f"  Training assays {config['data'].get('train_assays') or 'all'}, "
+          f"validation assays {config['training'].get('valid_assays') or 'all'}, "
+          f"dedup {config['data'].get('dedup', 'none')}: "
+          f"{row_report['rows_in']:,} rows kept, "
+          f"{row_report['duplicate_rows']:,} repeat a pair "
+          f"({row_report['pairs_with_conflicting_labels']:,} pairs with "
+          f"conflicting labels), {row_report['rows_out']:,} rows used.")
+    train_genomic = EPIGenomicDataset(bengi_paths=None, rows=train_rows,
+                                      **ds_kwargs)
     print("\n=== Loading test data ===")
+    # The test set is the benchmark as published: every row, in file order.
     test_genomic = EPIGenomicDataset(bengi_paths=test_files, **ds_kwargs)
 
     train_idx, val_idx, held = build_splits(train_genomic, args, config)
     print(f"\nHeld-out chromosomes for validation: {held}")
-
-    # Fit the position-aware encoder on training sequences only.
-    print("\nFitting the POCD-ND encoder on training sequences...")
-    encoder = POCD_ND_Encoder(k=config["data"]["kmer_size"])
     labels_all = train_genomic.get_labels()
     train_labels = np.array([labels_all[i] for i in train_idx])
-    pos_pool = [train_idx[j] for j in np.where(train_labels == 1)[0]]
-    neg_pool = [train_idx[j] for j in np.where(train_labels == 0)[0]]
-    max_fit = config["data"].get("encoder_fit_samples", 5000)
-    rng = np.random.default_rng(args.seed)
-    pos_sample = rng.choice(pos_pool, size=min(max_fit, len(pos_pool)),
-                            replace=False)
-    neg_sample = rng.choice(neg_pool, size=min(max_fit, len(neg_pool)),
-                            replace=False)
-    pos_seqs = [train_genomic[i]["enhancer_seq"] + train_genomic[i]["promoter_seq"]
-                for i in pos_sample]
-    neg_seqs = [train_genomic[i]["enhancer_seq"] + train_genomic[i]["promoter_seq"]
-                for i in neg_sample]
-    encoder.fit(pos_seqs, neg_seqs, config["data"]["sequence_length"])
+
+    print(f"\nFitting the POCD-ND encoder "
+          f"({config['data'].get('encoder_fit', 'train')})...")
+    encoder = fit_sequence_encoder(train_genomic, train_idx, config, args.seed)
     with open(os.path.join(save_dir, "encoder.pkl"), "wb") as f:
         pickle.dump(encoder, f)
-    print(f"  Encoder fitted on {len(pos_seqs)} positive and "
-          f"{len(neg_seqs)} negative sequences.")
 
     train_dataset = EPIDataset(config, encoder, source_dataset=train_genomic)
     test_dataset = EPIDataset(config, encoder, source_dataset=test_genomic)
@@ -401,19 +554,29 @@ def main():
     val_loader = DataLoader(val_set, batch_size=batch_size, **eval_kwargs)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, **eval_kwargs)
 
+    # A fixed sample of training rows, scored like validation (evaluation
+    # mode, no augmentation, the weights that are validated) after every
+    # epoch. The running training metrics are measured while the weights move
+    # and with dropout and augmentation on, so they cannot give a clean
+    # training-minus-validation gap; these can.
+    n_clean = min(config["training"].get("train_eval_samples", 0), len(train_idx))
+    clean_loader = None
+    if n_clean > 0:
+        pick = np.random.default_rng(args.seed + 1).choice(
+            len(train_idx), size=n_clean, replace=False)
+        clean_set = Subset(train_dataset, [train_idx[i] for i in sorted(pick)])
+        clean_loader = DataLoader(clean_set, batch_size=batch_size, **eval_kwargs)
+
     model = build_model(config).to(device)
     total_params = sum(p.numel() for p in model.parameters())
     print(f"\nModel {variant}: {total_params:,} parameters")
 
-    optimizer = optim.AdamW(model.parameters(), lr=config["training"]["lr"],
-                            weight_decay=config["training"].get("weight_decay", 1e-4))
-    if config["training"].get("use_cosine_scheduler", False):
-        scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            optimizer, T_0=5, T_mult=2)
-    else:
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode="max", factor=0.5, patience=5)
+    optimizer = build_optimizer(model, config)
+    scheduler, step_per_batch = build_scheduler(optimizer, config, len(train_loader))
     scaler = GradScaler("cuda", enabled=use_amp)
+    average = build_weight_average(model, config)
+    # The weights that are validated, selected and tested.
+    scored = lambda: average.module if average is not None else model
 
     epochs = config["training"]["epochs"]
     patience = config["training"].get("patience", 15)
@@ -446,6 +609,12 @@ def main():
             optimizer.load_state_dict(saved["optimizer"])
             scheduler.load_state_dict(saved["scheduler"])
             scaler.load_state_dict(saved["scaler"])
+            if average is not None:
+                if saved.get("average") is None:
+                    raise SystemExit(
+                        f"{state_path} has no weight average but this run "
+                        f"uses one; rerun with --no-resume.")
+                average.load_state_dict(saved["average"])
             history = saved["history"]
             best_metric = saved["best_metric"]
             patience_left = saved["patience_left"]
@@ -458,7 +627,12 @@ def main():
 
     print(f"\nTraining epochs {start_epoch} to {epochs}, patience {patience}, "
           f"augmentation {'on' if use_augment else 'off'}")
-    print("Model selection: validation AUROC plus AUPR")
+    print(f"Optimiser: AdamW, weight decay "
+          f"{config['training'].get('weight_decay', 1e-4)}, schedule "
+          f"{type(scheduler).__name__}, weight average "
+          f"{config['training'].get('ema_decay', 0.0) or 'off'}")
+    print("Model selection: validation AUROC plus AUPR"
+          + (" of the averaged weights" if average is not None else ""))
     print("State is saved after every epoch, so an interrupted run resumes "
           "here.\n")
 
@@ -488,6 +662,10 @@ def main():
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             scaler.step(optimizer)
             scaler.update()
+            if step_per_batch:
+                scheduler.step()
+            if average is not None:
+                average.update_parameters(model)
 
             running += float(loss)
             with torch.no_grad():
@@ -500,33 +678,46 @@ def main():
         train_metrics["loss"] = running / max(len(train_loader), 1)
 
         train_dataset.augment = False
-        val_metrics = evaluate_loader(model, val_loader, device, config, use_amp)
+        val_metrics = evaluate_loader(scored(), val_loader, device, config, use_amp)
+        clean_metrics = (evaluate_loader(scored(), clean_loader, device, config,
+                                         use_amp)
+                         if clean_loader is not None else None)
 
         elapsed = time.time() - started
         print(format_epoch_line(epoch, epochs, train_metrics, val_metrics, elapsed))
 
         selection = (val_metrics.get("auroc") or 0.0) + (val_metrics.get("aupr") or 0.0)
-        if config["training"].get("use_cosine_scheduler", False):
-            scheduler.step(epoch)
-        else:
+        if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
             scheduler.step(selection)
+        elif not step_per_batch:
+            scheduler.step(epoch)
 
         row = {"epoch": epoch, "seconds": round(elapsed, 1),
                "lr": optimizer.param_groups[0]["lr"]}
-        for prefix, m in (("train", train_metrics), ("val", val_metrics)):
+        scored_sets = [("train", train_metrics), ("val", val_metrics)]
+        if clean_metrics is not None:
+            scored_sets.append(("train_clean", clean_metrics))
+        for prefix, m in scored_sets:
             for key in ("loss", "auroc", "aupr", "accuracy",
                         "balanced_accuracy", "precision", "recall", "f1", "mcc"):
                 row[f"{prefix}_{key}"] = m.get(key)
         history.append(row)
+        if clean_metrics is not None:
+            print(f"  clean training sample: AUROC "
+                  f"{clean_metrics.get('auroc') or 0:.4f}, AUPR "
+                  f"{clean_metrics.get('aupr') or 0:.4f} "
+                  f"(validation {val_metrics.get('aupr') or 0:.4f})")
 
         if selection > best_metric:
             best_metric = selection
             patience_left = patience
-            torch.save({"model": model.state_dict(),
+            torch.save({"model": scored().state_dict(),
                         "config": config,
                         "epoch": epoch,
                         "seed": args.seed,
-                        "val_selection": selection}, ckpt_path)
+                        "val_selection": selection,
+                        "weights": "average" if average is not None else "raw"},
+                       ckpt_path)
         else:
             patience_left -= 1
             if patience_left <= 0:
@@ -541,6 +732,8 @@ def main():
                     "optimizer": optimizer.state_dict(),
                     "scheduler": scheduler.state_dict(),
                     "scaler": scaler.state_dict(),
+                    "average": (average.state_dict()
+                                if average is not None else None),
                     "history": history,
                     "best_metric": best_metric,
                     "patience_left": patience_left,
@@ -597,6 +790,12 @@ def main():
             modalities=np.array(config["data"].get("modalities", "all")),
             train_cells=np.array(args.train_cells),
             test_cells=np.array(args.test_cells),
+            train_assays=np.array(config["data"].get("train_assays") or ["all"]),
+            valid_assays=np.array(config["training"].get("valid_assays") or ["all"]),
+            dedup=np.array(config["data"].get("dedup", "none")),
+            encoder_fit=np.array(config["data"].get("encoder_fit", "train")),
+            train_rows=np.int64(len(train_idx)),
+            val_rows=np.int64(len(val_idx)),
             valid_chroms=np.array(held),
             total_params=np.int64(total_params),
             epochs_run=np.int64(len(history)),
@@ -609,7 +808,10 @@ def main():
                         "train_cells": args.train_cells,
                         "test_cells": args.test_cells,
                         "valid_chroms": held,
-                        "total_params": total_params}
+                        "total_params": total_params,
+                        "train_rows": len(train_idx),
+                        "val_rows": len(val_idx),
+                        "row_report": row_report}
     with open(os.path.join(save_dir, "config_snapshot.yaml"), "w") as f:
         yaml.dump(snapshot, f, default_flow_style=False, sort_keys=False)
 

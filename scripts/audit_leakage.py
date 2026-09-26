@@ -15,8 +15,11 @@ It reports three kinds of reuse for the test set:
   pair reuse      both ends match the SAME training pair, that is, the exact
                   pair was seen in another cell line
 
-It then writes a boolean index marking the test pairs that share no locus with
-training. `scripts/evaluate.py` scores that subset from predictions that are
+Training territory is every locus the model is trained or validated on: the
+rows of the training cell lines that the configuration keeps (its training
+and validation assays, after merging repeats), with `--protocol` applied as
+in training. It then writes a boolean index marking the test pairs that share
+no locus with training. `scripts/evaluate.py` scores that subset from predictions that are
 already saved, so the question is answered without retraining anything.
 
 Usage:
@@ -40,6 +43,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from src.bengi import read_rows, select_rows_for_config
 from src.config import load_config
 
 DEFAULT_TRAIN_CELLS = ["GM12878", "HeLa", "K562", "IMR90"]
@@ -54,6 +58,9 @@ def parse_args():
                    help="overrides paths.bengi_dir from the config")
     p.add_argument("--train-cells", nargs="+", default=DEFAULT_TRAIN_CELLS)
     p.add_argument("--test-cells", nargs="+", default=DEFAULT_TEST_CELLS)
+    p.add_argument("--protocol", default=None,
+                   help="protocol JSON from scripts/choose_protocol.py; its "
+                        "training assays define the training territory")
     p.add_argument("--min-overlap", type=float, default=0.5,
                    help="reciprocal overlap fraction counted as the same locus")
     p.add_argument("--out", default="results/leakage",
@@ -173,8 +180,17 @@ def main():
           f"{args.min_overlap:.0%}")
     print()
 
-    train_pairs = read_pairs(train_paths)
+    if args.protocol:
+        with open(args.protocol) as handle:
+            config["data"]["train_assays"] = json.load(handle).get("train_assays")
+    held = set(config["training"].get("valid_chroms", ["chr11", "chr17"]))
+    kept, _ = select_rows_for_config(read_rows(train_paths), held, config)
+    train_pairs = [{"chrom": r["chrom"], "enh": (r["enh_start"], r["enh_end"]),
+                    "prom": (r["tss_start"], r["tss_end"]), "cell": r["cell"],
+                    "label": r["label"], "dist": r["dist"]} for r in kept]
     test_pairs = read_pairs(test_paths)
+    print(f"  Training assays {config['data'].get('train_assays') or 'all'}, "
+          f"validation assays {config['training'].get('valid_assays') or 'all'}")
     print(f"  Training pairs: {len(train_pairs):,}")
     print(f"  Test pairs:     {len(test_pairs):,}")
 

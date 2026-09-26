@@ -1,0 +1,26 @@
+# SLIM variant KA with the corrected data pipeline but the original training
+# recipe, for one comparison run.
+#
+# Identical to slim_ka.yaml in the data (Hi-C rows, repeats merged, the
+# cross-fitted sequence encoding, the corrected augmentation) and in the
+# model. Only the optimisation goes back to what produced the first results:
+# a constant learning rate that the plateau rule never lowers inside five
+# epochs, weight decay 1e-4 on every parameter, no weight average, no
+# stochastic depth, and a patience that cannot end a five-epoch run.
+# Comparing this run with slim_ka.yaml at the same seed separates what the
+# data fixes changed from what the training recipe changed.
+extends: slim_ka.yaml
+
+experiment_name: "slim_ka_old_recipe"
+output_name: "ka_old_recipe"
+
+model:
+  drop_path_rate: 0.0
+
+training:
+  epochs: 5
+  patience: 15
+  weight_decay: 0.0001
+  no_decay_1d: false
+  scheduler: "plateau"
+  ema_decay: 0.0

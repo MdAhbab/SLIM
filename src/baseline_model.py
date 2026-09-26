@@ -4,6 +4,7 @@ import math
 from src.model_layers import (
     KANLinear, KAN, PositionalEncoding, SelfAttentionPooling,
 )
+from src.slim_model import build_epi_channel_mask, sequence_input_scale
 
 
 # ---------------------------------------------------------------------------
@@ -175,11 +176,25 @@ class Kansformer(nn.Module):
         self.pos_enc = PositionalEncoding(d_model, max_len=total_tokens + 2)
 
         # --- KAN-Transformer Encoder (KAN replaces FFN) ---
+        # Same stochastic-depth rate as the survival-gated encoder reads from
+        # the config, so the two encoders are regularised alike.
         self.transformer = KANTransformer(
             embed_dim=d_model, depth=depth, num_heads=num_heads,
             kan_hidden=kan_hidden, qkv_bias=True, drop=drop,
-            attn_drop=0.0, drop_path_rate=0.0,
+            attn_drop=0.0,
+            drop_path_rate=config['model'].get('drop_path_rate', 0.0),
         )
+
+        # Input ablations, identical to SLIM's. Not persistent, so checkpoints
+        # saved before these existed load unchanged.
+        modalities = config['data'].get('modalities', 'all')
+        self.register_buffer(
+            'epi_channel_mask',
+            build_epi_channel_mask(n_epi, modalities,
+                                   config['data'].get('keep_chromatin_tracks')),
+            persistent=False)
+        self.register_buffer('seq_input_scale', sequence_input_scale(modalities),
+                             persistent=False)
 
         # --- Self-Attention Pooling ---
         sa_da = config['model'].get('sa_da', 64)
@@ -201,6 +216,9 @@ class Kansformer(nn.Module):
 
     def forward(self, seq, epi, enh_idx, prom_idx):
         B = seq.size(0)
+
+        seq = seq * self.seq_input_scale.to(seq.dtype)
+        epi = epi * self.epi_channel_mask.to(epi.dtype)
 
         # --- Sequence branch ---
         x_seq = self.seq_cnn(seq)                # (B, d_model, n_seq_tokens)

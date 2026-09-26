@@ -16,6 +16,29 @@ def _reverse_complement(seq: str) -> str:
     """Return reverse complement of a DNA string."""
     return seq.translate(_COMP)[::-1]
 
+def shift_tracks(epi: torch.Tensor, shift: int, mode: str = "tracks") -> torch.Tensor:
+    """Shift chromatin bins by `shift` positions.
+
+    mode "tracks" moves channels 1 onward and fills the vacated bins with
+    zeros, leaving channel 0 (the position channel, aligned with the anchor
+    indices) where it is. mode "all" is the original circular roll of every
+    channel.
+    """
+    if shift == 0:
+        return epi
+    if mode == "all":
+        return torch.roll(epi, shifts=shift, dims=1)
+    out = epi.clone()
+    tracks = epi[1:]
+    moved = torch.zeros_like(tracks)
+    if shift > 0:
+        moved[:, shift:] = tracks[:, :-shift]
+    else:
+        moved[:, :shift] = tracks[:, -shift:]
+    out[1:] = moved
+    return out
+
+
 class EPIDataset(Dataset):
     """
     Wrapper that applies POCD-ND encoding to raw DNA sequences.
@@ -66,6 +89,27 @@ class EPIDataset(Dataset):
         self.aug_rc_prob = aug_cfg.get("rc_prob", 0.5)
         self.aug_epi_noise_std = aug_cfg.get("epi_noise_std", 0.05)
         self.aug_shift_max = aug_cfg.get("shift_max_bins", 3)
+        # How the two augmentations that move things around are applied.
+        #   rc_mode "segment": each of the enhancer and promoter sequences is
+        #       reverse-complemented in place, so the enhancer stays first,
+        #       which is the layout the position-specific encoding and the
+        #       encoder's segments assume. "concat" (the original rule)
+        #       reverse-complements the joined string, which moves the
+        #       promoter into the enhancer's half.
+        #   shift_mode "tracks": the chromatin tracks move by up to
+        #       shift_max_bins relative to the anchors, with zeros filling
+        #       the gap. "all" (the original rule) rolls every channel,
+        #       including the position channel, circularly, so the anchor
+        #       indices no longer match the position channel.
+        self.aug_rc_mode = aug_cfg.get("rc_mode", "concat")
+        self.aug_shift_mode = aug_cfg.get("shift_mode", "all")
+        if self.aug_rc_mode not in {"segment", "concat"}:
+            raise ValueError("augmentation.rc_mode must be segment or concat")
+        if self.aug_shift_mode not in {"tracks", "all"}:
+            raise ValueError("augmentation.shift_mode must be tracks or all")
+        # With the DNA branch switched off, the model never looks at the
+        # encoded sequence, so skip the encoding work and send zeros.
+        self.skip_sequence = config["data"].get("modalities", "all") == "epi"
 
         self.mode = None
         self._source = None
@@ -159,18 +203,23 @@ class EPIDataset(Dataset):
         """Retrieve from EPIGenomicDataset and apply POCD-ND encoding."""
         raw = self._source[idx]
         epi = raw["epi"].clone()  # (num_feats, num_bins) from pipeline
+        enhancer, promoter = raw["enhancer_seq"], raw["promoter_seq"]
+        flip = self.augment and np.random.random() < self.aug_rc_prob
 
         # Build DNA input string
+        if flip and self.aug_rc_mode == "segment":
+            enhancer = _reverse_complement(enhancer)
+            promoter = _reverse_complement(promoter)
         if self.concat_enh_prom:
-            dna = raw["enhancer_seq"] + raw["promoter_seq"]
+            dna = enhancer + promoter
         else:
-            dna = raw["enhancer_seq"]
+            dna = enhancer
         dna = self._pad_or_trim(dna)
 
         # --- Data augmentation (training only) ---
         if self.augment:
             # 1. Reverse complement with probability rc_prob
-            if np.random.random() < self.aug_rc_prob:
+            if flip and self.aug_rc_mode == "concat":
                 dna = _reverse_complement(dna)
 
             # 2. Small Gaussian noise on epigenetic features
@@ -178,13 +227,16 @@ class EPIDataset(Dataset):
                 epi = epi + torch.randn_like(epi) * self.aug_epi_noise_std
                 epi = epi.clamp(min=0)  # epigenetic signals are non-negative
 
-            # 3. Random circular shift of epigenetic bins (simulates coord jitter)
+            # 3. Random shift of epigenetic bins (simulates coord jitter)
             if self.aug_shift_max > 0:
                 shift = np.random.randint(-self.aug_shift_max, self.aug_shift_max + 1)
                 if shift != 0:
-                    epi = torch.roll(epi, shifts=shift, dims=1)
+                    epi = shift_tracks(epi, shift, self.aug_shift_mode)
 
-        seq_enc = self.encoder.transform(dna)  # Tensor (64, L)
+        if self.skip_sequence:
+            seq_enc = torch.zeros(4 ** self.encoder.k, len(dna) - self.encoder.k + 1)
+        else:
+            seq_enc = self.encoder.transform(dna, chrom=raw.get("chrom"))  # (64, L)
 
         return {
             "seq": seq_enc,

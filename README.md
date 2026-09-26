@@ -70,6 +70,70 @@ on two seeds, against 0.33 and 0.45 without it) and the second did not help, so
 the configurations keep the original rule. The write-log collapse check is
 there to show whether the full-length runs stay input-driven.
 
+### Pipeline fixes, and why the first runs overfit
+
+In every run of the first full experiment, validation peaked after one or two
+epochs while the training score kept climbing (AUROC 0.90 to 0.97). The
+baseline did this exactly as much as the SLIM variants, so the cause was the
+shared data and training pipeline, not the encoder. Five problems were found.
+Each is now a switch whose original setting reproduces the old behaviour, and
+`configs/base.yaml` turns every fix on for every model alike.
+
+1. **The sequence encoding leaked training labels.** POCD-ND is fitted on
+   labelled sequences and was fitted on training rows that were then trained
+   on, so each of those rows was encoded with densities that counted its own
+   label. At the real scale (5,000 plus 5,000 fitted sequences of 6,000 bp)
+   a single linear statistic of the encoding separates the fitted rows
+   perfectly even when the labels are random. `data.encoder_fit: crossfit`
+   fits one encoder per chromosome half (odd and even numbers) and encodes
+   every row with the encoder of the other half.
+   `scripts/audit_encoder_leakage.py` measures the effect on the real data.
+2. **The training assays did not match the test assay.** The loader reads
+   every BENGI file whose name starts with a training cell line. With the
+   ChIA-PET files present, as in the TransEPI copy of BENGI, 48 percent of the
+   training rows and half of the validation rows came from ChIA-PET, whose
+   positives are much closer together (median 31 kb for RNA polymerase II
+   ChIA-PET against 90 to 230 kb for Hi-C). The test cell lines have Hi-C
+   labels only. Distance alone scores validation AUROC 0.86 but test AUROC
+   0.73, so validation rewarded a rule the test does not follow.
+   `data.train_assays` and `training.valid_assays` now name the assays;
+   validation always uses the Hi-C rows.
+3. **Repeated pairs.** 38,787 training rows (12 percent) repeat a pair already
+   present in another assay file of the same cell line, and 4,075 of those
+   pairs carry conflicting labels. `data.dedup: union` merges them.
+4. **Two augmentations were wrong.** Reverse-complementing the joined
+   enhancer and promoter string moved the promoter into the enhancer's half,
+   which neither the position-specific encoding nor the encoder's segments
+   expect (`augmentation.rc_mode: segment` flips each sequence in place). The
+   bin shift rolled the position channel along with the tracks, so it no
+   longer matched the anchor indices (`augmentation.shift_mode: tracks`).
+5. **No regularisation acted inside the budget.** The learning rate never
+   changed, because the plateau rule needs five bad epochs; early stopping
+   needed fifteen; weight decay was 1e-4. The recipe is now a warm-up and
+   cosine schedule, weight decay 0.05 (not on biases or normalisation
+   scales), stochastic depth 0.1 in both encoders, an exponential moving
+   average of the weights for validation, selection and test, and early
+   stopping after two epochs without improvement. `configs/slim_ka_old_recipe.yaml`
+   keeps the corrected data with the old recipe, to separate the two.
+
+The overfitting gap is also measured properly now: a fixed sample of 10,000
+training rows is scored after every epoch exactly like validation
+(`train_clean_*` in `history.json`), instead of the running score taken with
+dropout and augmentation on.
+
+Which training assays to use, and whether to keep the DNA branch, is decided
+by four pilot runs of KA at seed 0 (Hi-C only or all assays, DNA on or off).
+`scripts/choose_protocol.py` picks the one with the highest validation AUPR on
+the Hi-C validation rows, without reading any test score, and every later run
+applies that choice with `--protocol results/protocol.json`. The pilots that
+lose become ablations.
+
+`scripts/audit_dataset.py` also reports what a model with no network at all
+reaches: ranking by distance gives test AUROC 0.73 and AUPR 0.20, and a
+logistic regression on distance plus how often the gene and the enhancer
+interacted in the training cell lines, fitted on Hi-C rows, gives 0.81 and
+0.41. Every trained model should be read against those two numbers.
+
 ## Models
 
 Four models share the branches, the pooling, the prediction heads, the data
@@ -115,9 +179,10 @@ run.py            runs every stage in order, resuming after interruptions
 configs/          base.yaml plus one thin overlay per model
 src/              library code
   config.py            configuration loading with inheritance
+  bengi.py             the one BENGI parser, repeat merging, assay selection
   epi_data_pipeline.py reads BENGI pairs and binned chromatin tracks
   dataset.py           PyTorch dataset, augmentation, sequence encoding
-  encoding.py          the position-aware trinucleotide encoder
+  encoding.py          the position-aware trinucleotide encoder, cross-fitted
   model_layers.py      spline layers, structured pooling, positional encoding
   memory_encoder.py      the survival-gated memory encoder
   slim_model.py     the two-branch model, all variants
@@ -128,12 +193,16 @@ src/              library code
 scripts/          entry points, one per job
   train.py             training, with per-epoch resume
   evaluate.py          thresholds, calibration, intervals, leakage subsets
+  audit_dataset.py     repeats, anchor reuse, distance and locus baselines
+  audit_encoder_leakage.py  label leakage through the sequence encoding
+  choose_protocol.py   picks training assays and inputs from the pilots
   audit_leakage.py     genomic overlap between the splits
   check_overfitting.py the overfitting gap and the transfer gap
   aggregate_seeds.py   per-seed values, means, paired differences
   benchmark_efficiency.py  latency, throughput, peak memory
   memory_writelog.py   what the survival gate selects
   build_results.py     tables and figures from saved predictions
+  make_tables.py       the manuscript tables as LaTeX fragments
 results/          one directory per model, holding per-example predictions
 tests/            run these before any long job
 ```
@@ -160,8 +229,8 @@ Check the installation without any data:
 
 ```bash
 python run.py --check              # packages, GPU, disk, data files
-python -m pytest -q                # 25 tests, about 10 seconds
-python -m pytest -q -m slow        # end to end on synthetic data, about 30 seconds
+python -m pytest -q                # 53 tests, about 20 seconds
+python -m pytest -q -m slow        # end to end on synthetic data, about 45 seconds
 ```
 
 The slow test builds a miniature dataset in the real BENGI and track formats,
@@ -186,8 +255,12 @@ data/BENGI/NHEK.HiC-Benchmark.v3.tsv.gz
 ```
 
 The first four are used for training, the last two are held out entirely for
-testing. The file name before the first dot is read as the cell line name, so
-keep the names as they are.
+testing. The file name before the first dot is read as the cell line name and
+the part after it as the assay, so keep the names as they are. Every file of a
+training cell line is read, so if the ChIA-PET benchmarks are present too
+(`GM12878.CTCF-ChIAPET-Benchmark.v3.tsv.gz` and the like, as in the TransEPI
+copy of BENGI), `data.train_assays` decides whether they are used; the pilot
+runs choose.
 
 **2. Chromatin tracks.** Eight assays per cell line from ENCODE
 (<https://www.encodeproject.org>): CTCF, DNase, H3K27ac, H3K27me3, H3K36me3,
@@ -229,9 +302,17 @@ fails loudly if something is wrong, so run it.
 python run.py
 ```
 
-One command runs the whole plan: environment checks, the test suite, the split
-audit, every training run, and every analysis. It takes about 25 hours of GPU
-time at roughly 20 minutes per epoch.
+One command runs the whole plan: environment checks, the test suite, the two
+data audits, the four protocol pilots and the choice between them, every
+training run, and every analysis. It takes about 34 hours of GPU time; the
+estimate per stage is shown by `python run.py --list`.
+
+Results from an earlier plan must be moved out of the way first, or their
+stages would be skipped as already finished:
+
+```bash
+python run.py --archive before_pipeline_fixes
+```
 
 **It is safe to interrupt.** Finished stages are recorded in
 `results/run_state.json` and skipped on the next run. Inside a training run, the
@@ -246,6 +327,7 @@ python run.py --only leakage         # one stage
 python run.py --from train_ka_seed0  # that stage and everything after it
 python run.py --redo train_a_seed0   # force a stage to run again
 python run.py --dry-run              # print the plan, run nothing
+python run.py --archive NAME         # move all results to results/archive/NAME/
 ```
 
 Each stage writes its console output to `results/logs/<stage>.log`. A failing
@@ -257,10 +339,41 @@ The stages below are what `run.py` calls. Approximately 2 hours per five-epoch
 run. The order matters: the first step costs nothing and can change how the rest
 is interpreted.
 
+### Step 0: audit the data (processor only, about twenty minutes)
+
+```bash
+python scripts/audit_dataset.py
+python scripts/audit_encoder_leakage.py
+```
+
+The first needs only the BENGI files and reports repeated pairs, how often
+anchors recur, and the distance-only and locus-prior baselines. The second
+needs the genome and measures how strongly each way of fitting the sequence
+encoder carries training labels into the encoding.
+
+### Step 0b: choose the protocol (about seven GPU hours)
+
+```bash
+python scripts/train.py --config configs/slim_ka.yaml --seed 0 \
+    --train-assays HiC --modalities all --output-dir results/pilot_hic_dna
+python scripts/train.py --config configs/slim_ka.yaml --seed 0 \
+    --train-assays HiC --modalities epi --output-dir results/pilot_hic_nodna
+python scripts/train.py --config configs/slim_ka.yaml --seed 0 \
+    --train-assays all --modalities all --output-dir results/pilot_all_dna
+python scripts/train.py --config configs/slim_ka.yaml --seed 0 \
+    --train-assays all --modalities epi --output-dir results/pilot_all_nodna
+python scripts/choose_protocol.py --pilots results/pilot_* --out results/protocol.json
+```
+
+All four are validated on the same Hi-C rows. The choice uses validation AUPR
+only. Add `--keep-dna` to `choose_protocol.py` to consider only the pilots
+with the DNA branch on.
+
 ### Step 1: audit the splits (processor only, about one minute)
 
 ```bash
-python scripts/audit_leakage.py --config configs/slim_ka.yaml
+python scripts/audit_leakage.py --config configs/slim_ka.yaml \
+    --protocol results/protocol.json
 ```
 
 Cross-cell-line evaluation holds out whole cell lines, but the held-out cell
@@ -271,15 +384,19 @@ measures how often that happens and writes an index marking the test pairs that
 share no locus with training. Later steps score that subset separately, so the
 question is answered with measurements rather than assumptions.
 
-### Step 2: train each model on three seeds (about 24 hours)
+### Step 2: train each model (about 18 hours)
 
 ```bash
+P="--protocol results/protocol.json"
 for seed in 0 1 2; do
-  python scripts/train.py --config configs/baseline.yaml   --seed $seed
-  python scripts/train.py --config configs/slim_ka.yaml --seed $seed
-  python scripts/train.py --config configs/slim_ga.yaml --seed $seed
+  for config in baseline slim_ka slim_ga slim_a; do
+    python scripts/train.py --config configs/$config.yaml --seed $seed $P
+  done
 done
-python scripts/train.py --config configs/slim_a.yaml --seed 0
+for seed in 3 4; do
+  python scripts/train.py --config configs/baseline.yaml --seed $seed $P
+  python scripts/train.py --config configs/slim_ka.yaml  --seed $seed $P
+done
 ```
 
 Each run writes to `results/<variant>/seed<N>/`. The seed fixes Python, NumPy
@@ -294,20 +411,30 @@ then moved into place so an interruption during the write cannot corrupt it. An
 interrupted run continues at the epoch after the last completed one. Pass
 `--no-resume` to ignore a saved state and start over.
 
-### Step 3: how much does the chromatin branch carry? (about 4 hours)
+### Step 3: ablations of variant KA (about 8 hours)
 
 ```bash
-python scripts/train.py --config configs/slim_ga.yaml --seed 0 \
-    --modalities seq     --output-dir results/ga_seq_only
-python scripts/train.py --config configs/slim_ga.yaml --seed 0 \
-    --modalities seq+pos --output-dir results/ga_seq_pos
+P="--protocol results/protocol.json"
+python scripts/train.py --config configs/slim_ka_old_recipe.yaml    --seed 0 $P --output-dir results/ka_old_recipe/seed0
+python scripts/train.py --config configs/slim_ka_legacy.yaml        --seed 0 $P --output-dir results/ka_legacy/seed0
+python scripts/train.py --config configs/slim_ka.yaml --seed 0 $P --modalities seq --output-dir results/ka_dna_geometry/seed0
+python scripts/train.py --config configs/slim_ka_random_select.yaml --seed 0 $P --output-dir results/ka_random_select/seed0
+python scripts/train.py --config configs/slim_ka_no_readback.yaml   --seed 0 $P --output-dir results/ka_no_readback/seed0
+python scripts/train.py --config configs/slim_ka_learned_only.yaml  --seed 0 $P --output-dir results/ka_learned_only/seed0
 ```
 
-Testing on an unseen cell type while supplying that cell type's own chromatin
-measurements is a weaker claim than sequence-only generalization. These two runs
-quantify the difference. `seq` blanks the whole chromatin input; `seq+pos` keeps
-only the channel marking where the enhancer and promoter sit. The architecture
-is identical in both, so this is an input ablation and nothing else.
+Each changes one thing: the training recipe, the memory rules, the chromatin
+tracks, how survivors are chosen, whether the memory is read back, or which
+terms the survival score uses. Together with the pilots, which vary the
+training assays and the DNA branch, they give every ablation in the
+manuscript.
+
+`--modalities seq` blanks the whole chromatin input, but it is not
+sequence-only: the head still reads the tokens at the enhancer and promoter
+positions, and the window is centred on the pair, so the pair's distance
+remains visible. It is reported as "DNA and pair geometry". The distance-only
+baseline from Step 0 is the floor it has to beat. `--modalities epi` does the
+opposite and switches the DNA branch off.
 
 ### Step 4: measure efficiency (about 10 minutes)
 
@@ -356,16 +483,18 @@ the model learned is specific to the training cell types. This is the gap the
 project is about, and it is usually the larger of the two. Training for fewer
 epochs does not shrink it.
 
-The distinction matters because the two call for opposite responses. In the runs
-so far the baseline scores higher on validation (AUPR 0.620 against 0.606) and
-lower on test (0.444 against 0.474), so the survival-gated encoder gives up a
-little in-distribution accuracy and gains more out of it. A smaller transfer gap
-at a similar validation score is the property this work claims to improve.
+The distinction matters because the two call for opposite responses. When a run
+records `train_clean_*`, the training score is that clean sample, scored like
+validation; older runs only have the running score, and the report says which
+it used. Since validation now uses Hi-C rows only, whose positive rate (about
+4 percent) is lower than the test cell lines' (about 11 percent), absolute
+validation and test AUPR are not comparable; compare transfer gaps between
+models, not across the two splits.
 
 ### Step 6: what does the memory select? (about 30 minutes)
 
 ```bash
-python scripts/memory_writelog.py --run results/ga/seed0
+python scripts/memory_writelog.py --run results/ka/seed0
 ```
 
 Records which positions the survival gate writes, then tests whether those
@@ -438,8 +567,12 @@ needs a second training run.
 
 - The chromatin branch reads the test cell type's own measured tracks. Step 3
   quantifies how much of the performance depends on that.
-- The reported budget is five epochs. Longer training was not explored
-  systematically.
+- The budget is at most eight epochs with early stopping. Longer training was
+  not explored systematically.
+- Holding out cell lines does not hold out loci: a regression on how often a
+  gene and an enhancer interacted in the training cell lines already reaches
+  test AUPR 0.41 with distance. Step 1 and the leakage-disjoint subset measure
+  how much of a model's score depends on shared loci.
 - The benchmark is BENGI on hg19 with two held-out cell lines. Generalization to
   other benchmarks, assays and genome builds is untested.
 - No comparison against selective state-space backbones or large pretrained
