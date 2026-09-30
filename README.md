@@ -203,6 +203,10 @@ scripts/          entry points, one per job
   memory_writelog.py   what the survival gate selects
   build_results.py     tables and figures from saved predictions
   make_tables.py       the manuscript tables as LaTeX fragments
+  paper_numbers.py     every number the manuscript and thesis quote, with
+                       paired tests, ensembles and all table fragments
+                       (results/paper_numbers.json, results/tables/)
+  paper_figures.py     the manuscript data figures, from paper_numbers.json
 results/          one directory per model, holding per-example predictions
 tests/            run these before any long job
 ```

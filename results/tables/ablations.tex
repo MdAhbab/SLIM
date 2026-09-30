@@ -1,0 +1,13 @@
+\begin{tabular}{lcccc}
+\toprule
+Configuration (seed 0) & Val.\ AUPR & Test AUROC & Test AUPR & $\Delta$ AUPR \\
+\midrule
+SLIM-KA, chosen protocol & 0.316 & 0.877 & 0.524 & -- \\
+Original training recipe & 0.294 & 0.872 & 0.524 & +0.000 \\
+Original memory rules & 0.294 & 0.869 & 0.511 & -0.013 \\
+Random survivors & 0.304 & 0.855 & 0.515 & -0.008 \\
+No memory read-back & 0.306 & 0.868 & 0.528 & +0.004 \\
+Learned score only & 0.313 & 0.874 & 0.511 & -0.013 \\
+DNA and pair geometry, no chromatin & 0.129 & 0.806 & 0.379 & -0.145 \\
+\bottomrule
+\end{tabular}
