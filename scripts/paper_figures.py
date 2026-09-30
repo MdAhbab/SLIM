@@ -33,6 +33,8 @@ import matplotlib as mpl
 
 mpl.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.patches import Circle, FancyBboxPatch, PathPatch, Polygon, Rectangle  # noqa: E402
+from matplotlib.path import Path  # noqa: E402
 from sklearn.metrics import precision_recall_curve, roc_curve  # noqa: E402
 
 mpl.rcParams.update({
@@ -100,6 +102,144 @@ def save(fig, out, name):
     print(f"  wrote {name}")
 
 
+# Pictograms: small vector line drawings that name the subject of a panel. They
+# are drawn in their own inset axes above the panel and carry no data.
+LW = 0.9
+TINT = {BLUE: "#DBEAFE", ORANGE: "#FFEDD5", GREEN: "#D1FAE5", GREY: "#F3F4F6"}
+
+
+def icon_axes(ax, rect, xlim=(0, 1), ylim=(0, 1)):
+    """An inset in axes coordinates with equal aspect, no frame and no ticks."""
+    ia = ax.inset_axes(rect)
+    ia.set_xlim(*xlim)
+    ia.set_ylim(*ylim)
+    ia.set_aspect("equal", adjustable="box", anchor="C")
+    ia.axis("off")
+    return ia
+
+
+def ico_cell(ia, x, y, r=0.4, dashed=False, colour=GREY, label=None):
+    ia.add_patch(Circle((x, y), r, fill=False, ec=colour, lw=LW,
+                        linestyle=(0, (2.2, 1.6)) if dashed else "-"))
+    ia.add_patch(Circle((x, y), r * 0.36, fc=colour, ec="none"))
+    if label:
+        ia.text(x, y - r - 0.12, label, ha="center", va="top", fontsize=8, color=INK)
+
+
+def ico_die(ia, pips, colour=GREY):
+    ia.add_patch(FancyBboxPatch((0.1, 0.1), 0.8, 0.8, boxstyle="round,pad=0,rounding_size=0.14",
+                                fc=TINT.get(colour, "white"), ec=colour, lw=LW))
+    spots = {"c": (0.5, 0.5), "tl": (0.28, 0.72), "tr": (0.72, 0.72), "bl": (0.28, 0.28),
+             "br": (0.72, 0.28), "ml": (0.28, 0.5), "mr": (0.72, 0.5)}
+    layout = {1: ["c"], 2: ["tl", "br"], 3: ["tl", "c", "br"], 4: ["tl", "tr", "bl", "br"],
+              5: ["tl", "tr", "c", "bl", "br"], 6: ["tl", "tr", "ml", "mr", "bl", "br"]}
+    for s in layout[pips]:
+        ia.add_patch(Circle(spots[s], 0.075, fc=INK, ec="none"))
+
+
+def ico_stopwatch(ia):
+    ia.add_patch(Circle((0.5, 0.44), 0.36, fill=False, ec=INK, lw=LW))
+    ia.add_patch(Rectangle((0.42, 0.84), 0.16, 0.09, fc=INK, ec="none"))
+    ia.plot([0.5, 0.5], [0.8, 0.84], color=INK, lw=LW)
+    ia.plot([0.5, 0.64], [0.44, 0.62], color=INK, lw=LW * 1.3, solid_capstyle="round")
+
+
+def ico_chip(ia):
+    ia.add_patch(FancyBboxPatch((0.24, 0.24), 0.52, 0.52, boxstyle="round,pad=0,rounding_size=0.06",
+                                fill=False, ec=INK, lw=LW))
+    ia.add_patch(Rectangle((0.38, 0.38), 0.24, 0.24, fill=False, ec=INK, lw=LW))
+    for t in (0.34, 0.5, 0.66):
+        for a, b in (((t, 0.76), (t, 0.9)), ((t, 0.24), (t, 0.1)), ((0.24, t), (0.1, t)), ((0.76, t), (0.9, t))):
+            ia.plot([a[0], b[0]], [a[1], b[1]], color=INK, lw=LW)
+
+
+def ico_leak(ia):
+    for y in (0.62, 0.06):
+        ia.add_patch(FancyBboxPatch((0.18, y), 0.64, 0.28, boxstyle="round,pad=0,rounding_size=0.05",
+                                    fc=TINT[GREY], ec=GREY, lw=LW))
+    ia.add_patch(Polygon([(0.43, 0.45), (0.57, 0.45), (0.5, 0.58)], fc=BLUE, ec="none"))
+    ia.add_patch(Circle((0.5, 0.43), 0.075, fc=BLUE, ec="none"))
+
+
+def ico_loop(ia):
+    verts = [(0.02, 0.18), (0.34, 0.18), (0.34, 0.18), (0.05, 0.98), (0.95, 0.98), (0.64, 0.18),
+             (0.64, 0.18), (0.98, 0.18)]
+    codes = [Path.MOVETO, Path.LINETO, Path.MOVETO, Path.CURVE4, Path.CURVE4, Path.CURVE4,
+             Path.MOVETO, Path.LINETO]
+    ia.add_patch(PathPatch(Path(verts, codes), fill=False, ec=GREY, lw=LW * 1.2))
+    ia.add_patch(Polygon([(0.34, 0.1), (0.42, 0.18), (0.34, 0.26), (0.26, 0.18)], fc=BLUE, ec="none"))
+    ia.plot([0.66, 0.66, 0.8], [0.18, 0.34, 0.34], color=GREEN, lw=LW * 1.3)
+    ia.add_patch(Polygon([(0.8, 0.29), (0.88, 0.34), (0.8, 0.39)], fc=GREEN, ec="none"))
+
+
+def ico_audit(ia):
+    ia.add_patch(Rectangle((0.04, 0.22), 0.58, 0.56, fill=False, ec=GREY, lw=LW))
+    for y in (0.41, 0.6):
+        ia.plot([0.04, 0.62], [y, y], color=GREY, lw=LW * 0.7)
+    for x in (0.23, 0.43):
+        ia.plot([x, x], [0.22, 0.78], color=GREY, lw=LW * 0.7)
+    ia.add_patch(Rectangle((0.04, 0.6), 0.58, 0.18, fc=TINT[BLUE], ec=GREY, lw=LW * 0.7))
+    ia.add_patch(Circle((0.66, 0.44), 0.19, fc="white", ec=INK, lw=LW * 1.2))
+    ia.plot([0.79, 0.95], [0.31, 0.12], color=INK, lw=LW * 2.2, solid_capstyle="round")
+
+
+def ico_flasks(ia, chosen=0):
+    for i in range(4):
+        x0 = i * 1.1
+        colour = BLUE if i == chosen else GREY
+        ia.add_patch(Polygon([(x0 + 0.36, 0.95), (x0 + 0.36, 0.6), (x0 + 0.05, 0.08), (x0 + 0.95, 0.08),
+                              (x0 + 0.64, 0.6), (x0 + 0.64, 0.95)], fill=False, ec=colour, lw=LW))
+        ia.add_patch(Polygon([(x0 + 0.22, 0.36), (x0 + 0.05, 0.08), (x0 + 0.95, 0.08), (x0 + 0.78, 0.36)],
+                             fc=TINT[colour], ec="none"))
+
+
+def ico_overlap(ia, shared):
+    xs = (0.36, 0.64) if shared else (0.24, 0.76)
+    for x in xs:
+        ia.add_patch(Circle((x, 0.5), 0.22, fill=False, ec=INK, lw=LW))
+
+
+def ico_cut_strip(ia):
+    for i in range(6):
+        cut = i == 3
+        ia.add_patch(Rectangle((0.04 + i * 0.26, 0.3), 0.2, 0.4, fc="white" if cut else TINT[GREEN],
+                               ec=GREEN, lw=LW, linestyle=(0, (2, 1.4)) if cut else "-"))
+    x0 = 0.04 + 3 * 0.26
+    ia.plot([x0 + 0.02, x0 + 0.18], [0.34, 0.66], color=ORANGE, lw=LW * 1.3)
+    ia.plot([x0 + 0.02, x0 + 0.18], [0.66, 0.34], color=ORANGE, lw=LW * 1.3)
+
+
+def ico_gate(ia):
+    for x in (0.12, 0.34):
+        ia.add_patch(Rectangle((x, 0.1), 0.12, 0.8, fc=GREEN, ec="none"))
+    ia.annotate("", xy=(0.82, 0.5), xytext=(0.5, 0.5),
+                arrowprops={"arrowstyle": "-|>", "color": INK, "lw": LW * 1.2, "mutation_scale": 10})
+    ia.add_patch(Rectangle((0.84, 0.34), 0.32, 0.32, fc=GREEN, ec="none"))
+
+
+def ico_tokens(ia):
+    x = 0.0
+    for colour, n, written in ((BLUE, 2, ()), (ORANGE, 5, (1, 3))):
+        for i in range(n):
+            ia.add_patch(Rectangle((x, 0.3), 0.22, 0.4, fc=GREEN if i in written else "white",
+                                   ec=colour, lw=LW))
+            x += 0.27
+        x += 0.12
+
+
+def unseen_cells(ax):
+    """The two unseen test cell lines, dashed as in every figure of the project."""
+    ia = icon_axes(ax, [0.5, 1.0, 0.5, 0.24], xlim=(0, 3.4), ylim=(-0.62, 0.9))
+    ico_cell(ia, 0.75, 0.42, r=0.38, dashed=True, label="HMEC")
+    ico_cell(ia, 2.65, 0.42, r=0.38, dashed=True, label="NHEK")
+
+
+def titled_die(ax, title, seeds, colour):
+    """Panel title preceded by a die whose pips give the number of seeds."""
+    ico_die(icon_axes(ax, [0.0, 1.02, 0.14, 0.14]), seeds, colour)
+    ax.text(0.17, 1.04, title, transform=ax.transAxes, ha="left", va="bottom", fontsize=9.5)
+
+
 def seed_panel(ax, N, metric, ylabel):
     """Every seed as a point, with the mean and one standard deviation."""
     for i, (key, label, colour, marker, _) in enumerate(MODELS):
@@ -146,6 +286,7 @@ def fig_audit(N, R, out):
     ax.legend(frameon=False, loc="upper right", handlelength=1.2, fontsize=8)
     style(ax)
     panel(ax, "a")
+    ico_leak(icon_axes(ax, [0.86, 1.01, 0.14, 0.2]))
 
     # b: distance between the two anchors, by assay and class
     ax = axes[1]
@@ -170,6 +311,7 @@ def fig_audit(N, R, out):
     ax.legend(frameon=False, loc="upper right", handletextpad=0.2)
     style(ax)
     panel(ax, "b")
+    ico_loop(icon_axes(ax, [0.84, 1.01, 0.16, 0.2]))
 
     # c: reference predictors without a network, by the rows they were fitted on
     ax = axes[2]
@@ -193,6 +335,7 @@ def fig_audit(N, R, out):
     ax.legend(frameon=False, loc="upper right", handlelength=1.2, fontsize=8, ncol=1)
     style(ax)
     panel(ax, "c")
+    ico_audit(icon_axes(ax, [0.85, 1.01, 0.15, 0.2]))
 
     # d: the four protocol pilots, scored on the same Hi-C validation rows
     ax = axes[3]
@@ -210,6 +353,8 @@ def fig_audit(N, R, out):
     ax.set_xlabel("Validation AUPR (Hi-C rows, chr11 and chr17)")
     style(ax, grid_axis="x")
     panel(ax, "d")
+    ico_flasks(icon_axes(ax, [0.7, 1.01, 0.3, 0.16], xlim=(0, 4.4)),
+               chosen=[p["chosen"] for p in pilots].index(True))
     save(fig, out, "fig_audit")
 
 
@@ -220,6 +365,7 @@ def fig_benchmark(N, R, out):
     ax = fig.add_subplot(gs[0, 0])
     seed_panel(ax, N, "auroc", "Test AUROC")
     panel(ax, "a")
+    unseen_cells(ax)
     ax = fig.add_subplot(gs[0, 1])
     seed_panel(ax, N, "aupr", "Test AUPR")
     panel(ax, "b")
@@ -243,6 +389,7 @@ def fig_benchmark(N, R, out):
               handlelength=1.2)
     style(ax)
     panel(ax, "c")
+    unseen_cells(ax)
 
     # d: pairs sharing a locus with training versus pairs that share none
     ax = fig.add_subplot(gs[1, 0])
@@ -259,8 +406,11 @@ def fig_benchmark(N, R, out):
                         f"Shares none\n(n = {ov['disjoint']:,})"], fontsize=8)
     ax.set_ylabel("Test AUPR")
     ax.set_ylim(0.3, 0.65)
+    ax.set_xlim(-0.5, 1.5)
     style(ax)
     panel(ax, "d")
+    ico_overlap(icon_axes(ax, [0.15, 1.01, 0.2, 0.16]), shared=True)
+    ico_overlap(icon_axes(ax, [0.65, 1.01, 0.2, 0.16]), shared=False)
 
     # e, f: measured cost on one GPU, batch of 32 pairs
     eff = N["efficiency"]["models"]
@@ -278,6 +428,7 @@ def fig_benchmark(N, R, out):
         ax.set_ylim(0, max(eff[EFF_KEY[k]][field] * scale for k, *_ in MODELS) * 1.18)
         style(ax)
         panel(ax, letter)
+        (ico_stopwatch if letter == "e" else ico_chip)(icon_axes(ax, [0.83, 1.01, 0.17, 0.2]))
     save(fig, out, "fig_benchmark")
 
 
@@ -307,6 +458,7 @@ def fig_memory(N, R, out):
     ax.legend(frameon=False, fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.17), handlelength=1.2)
     style(ax, grid_axis="x")
     panel(ax, "a")
+    ico_cut_strip(icon_axes(ax, [0.6, 1.02, 0.4, 0.12], xlim=(0, 1.6)))
 
     # b: chromatin signal in written versus unwritten bins
     ax = fig.add_subplot(gs[0, 1])
@@ -331,6 +483,7 @@ def fig_memory(N, R, out):
     ax.legend(frameon=False, fontsize=7.5, loc="lower right", handletextpad=0.2)
     style(ax, grid_axis="x")
     panel(ax, "b")
+    ico_gate(icon_axes(ax, [0.7, 1.02, 0.3, 0.14], xlim=(0, 1.2)))
 
     # c: where SLIM-KA writes, by token position
     ax = fig.add_subplot(gs[0, 2])
@@ -349,6 +502,7 @@ def fig_memory(N, R, out):
     ax.set_ylabel("Windows with a write")
     style(ax)
     panel(ax, "c")
+    ico_tokens(icon_axes(ax, [0.55, 1.02, 0.45, 0.12], xlim=(0, 2.15)))
     save(fig, out, "fig_memory")
 
 
@@ -365,7 +519,7 @@ def figS_curves(N, R, out):
                     linewidth=1.0, alpha=0.8)
             ax.plot(ep, [r["val_aupr"] for r in hist], color=colour, marker=marker,
                     markersize=3.5, linewidth=1.2)
-        ax.set_title(label)
+        titled_die(ax, label, N["models"][key]["seeds"], colour)
         ax.set_xlabel("Epoch")
         ax.set_xticks(range(1, 9))
         style(ax)
@@ -387,7 +541,9 @@ def figS_calibration(N, R, out):
             ax.plot([b["confidence"] for b in bins], [b["accuracy"] for b in bins], color=colour,
                     marker=marker, markersize=3, linewidth=1.0, alpha=0.8)
         ax.plot([0, 1], [0, 1], color=INK, linestyle=":", linewidth=0.8)
-        ax.set_title(f"{label}, ECE {N['models'][key]['ece']['mean']:.3f}")
+        titled_die(ax, label, N["models"][key]["seeds"], colour)
+        ax.text(0.04, 0.96, f"ECE {N['models'][key]['ece']['mean']:.3f}", transform=ax.transAxes,
+                ha="left", va="top", fontsize=8.5)
         ax.set_xlabel("Predicted probability")
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
@@ -422,6 +578,7 @@ def figS_pr(N, R, out):
         ax.legend(frameon=False, fontsize=7.5, loc="lower right" if letter == "a" else "upper right")
         style(ax, grid_axis="both")
         panel(ax, letter)
+    ico_die(icon_axes(axes[0], [0.86, 1.02, 0.14, 0.14]), 3)
     save(fig, out, "figS_pr")
 
 
