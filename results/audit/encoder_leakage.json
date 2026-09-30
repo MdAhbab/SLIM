@@ -1,0 +1,48 @@
+{
+  "train_assays": [
+    "HiC"
+  ],
+  "train_rows": 133928,
+  "validation_rows": 22421,
+  "rules": {
+    "train": {
+      "fitted": {
+        "n": 3000,
+        "positives": 1500,
+        "auroc": 0.935,
+        "standardised_gap": 1.992
+      },
+      "unfitted": {
+        "n": 3000,
+        "positives": 1500,
+        "auroc": 0.821,
+        "standardised_gap": 1.218
+      },
+      "validation": {
+        "n": 3000,
+        "positives": 880,
+        "auroc": 0.5302,
+        "standardised_gap": 0.101
+      }
+    },
+    "crossfit": {
+      "fitted": {
+        "n": 3000,
+        "positives": 1500,
+        "auroc": 0.6111,
+        "standardised_gap": 0.39
+      },
+      "unfitted": {
+        "n": 3000,
+        "auroc": null,
+        "standardised_gap": null
+      },
+      "validation": {
+        "n": 3000,
+        "positives": 880,
+        "auroc": 0.5231,
+        "standardised_gap": 0.064
+      }
+    }
+  }
+}

@@ -1,0 +1,1138 @@
+{
+  "bengi_dir": "D:\\E\\AI Models\\FYDP-Model\\data\\BENGI",
+  "train_cells": [
+    "GM12878",
+    "HeLa",
+    "K562",
+    "IMR90"
+  ],
+  "test_cells": [
+    "HMEC",
+    "NHEK"
+  ],
+  "valid_chroms": [
+    "chr11",
+    "chr17"
+  ],
+  "files": [
+    {
+      "file": "GM12878.CTCF-ChIAPET-Benchmark.v3.tsv.gz",
+      "rows": 40845,
+      "positives": 4817,
+      "positive_rate": 0.1179
+    },
+    {
+      "file": "GM12878.HiC-Benchmark.v3.tsv.gz",
+      "rows": 48907,
+      "positives": 2695,
+      "positive_rate": 0.0551
+    },
+    {
+      "file": "GM12878.RNAPII-ChIAPET-Benchmark.v3.tsv.gz",
+      "rows": 95655,
+      "positives": 24985,
+      "positive_rate": 0.2612
+    },
+    {
+      "file": "HeLa.CTCF-ChIAPET-Benchmark.v3.tsv.gz",
+      "rows": 12135,
+      "positives": 1346,
+      "positive_rate": 0.1109
+    },
+    {
+      "file": "HeLa.HiC-Benchmark.v3.tsv.gz",
+      "rows": 23342,
+      "positives": 2256,
+      "positive_rate": 0.0966
+    },
+    {
+      "file": "HeLa.RNAPII-ChIAPET-Benchmark.v3.tsv.gz",
+      "rows": 2926,
+      "positives": 744,
+      "positive_rate": 0.2543
+    },
+    {
+      "file": "IMR90.HiC-Benchmark.v3.tsv.gz",
+      "rows": 14736,
+      "positives": 1468,
+      "positive_rate": 0.0996
+    },
+    {
+      "file": "K562.HiC-Benchmark.v3.tsv.gz",
+      "rows": 76064,
+      "positives": 2765,
+      "positive_rate": 0.0364
+    },
+    {
+      "file": "HMEC.HiC-Benchmark.v3.tsv.gz",
+      "rows": 22305,
+      "positives": 2286,
+      "positive_rate": 0.1025
+    },
+    {
+      "file": "NHEK.HiC-Benchmark.v3.tsv.gz",
+      "rows": 15402,
+      "positives": 1820,
+      "positive_rate": 0.1182
+    }
+  ],
+  "training_repeats": {
+    "exact_repeats_across_assays": {
+      "rows_in": 314610,
+      "unique_pairs": 275823,
+      "duplicate_rows": 38787,
+      "pairs_repeated": 33821,
+      "pairs_with_conflicting_labels": 4075,
+      "rows_out": 314610
+    },
+    "enhancer_gene_groups": {
+      "groups": 119120,
+      "rows": 314610,
+      "rows_per_group_mean": 2.641,
+      "groups_with_conflicting_labels": 1989
+    },
+    "pairs_in_several_cell_lines": {
+      "distinct_pairs": 267441,
+      "pairs_in_two_or_more_cells": 7824,
+      "of_those_label_differs_between_cells": 952
+    },
+    "rows_by_cell_and_assay": {
+      "GM12878/CTCF-ChIAPET": 40845,
+      "GM12878/HiC": 48907,
+      "GM12878/RNAPII-ChIAPET": 95655,
+      "HeLa/CTCF-ChIAPET": 12135,
+      "HeLa/HiC": 23342,
+      "HeLa/RNAPII-ChIAPET": 2926,
+      "IMR90/HiC": 14736,
+      "K562/HiC": 76064
+    }
+  },
+  "test_repeats": {
+    "rows_in": 37707,
+    "unique_pairs": 36198,
+    "duplicate_rows": 1509,
+    "pairs_repeated": 1244,
+    "pairs_with_conflicting_labels": 0,
+    "rows_out": 37707
+  },
+  "after_union_dedup": {
+    "training_pool_rows": 275823,
+    "training_pool_positive_rate": 0.1309,
+    "train_split_rows": 232931,
+    "train_split_hic_rows": 125911,
+    "validation_rows": 42892,
+    "validation_hic_rows": 20909,
+    "rows_by_cell": {
+      "GM12878": 154257,
+      "HeLa": 34682,
+      "IMR90": 14230,
+      "K562": 72654
+    },
+    "rows_by_cell_before": {
+      "GM12878": 185407,
+      "HeLa": 38403,
+      "IMR90": 14736,
+      "K562": 76064
+    }
+  },
+  "anchors": {
+    "promoter": {
+      "distinct": 45256,
+      "pairs_per_anchor_median": 4.0,
+      "pairs_per_anchor_mean": 6.09,
+      "pairs_per_anchor_max": 66,
+      "rows_whose_anchor_has_10_or_more_pairs": 0.4857
+    },
+    "enhancer": {
+      "distinct": 11545,
+      "pairs_per_anchor_median": 14.0,
+      "pairs_per_anchor_mean": 23.89,
+      "pairs_per_anchor_max": 291,
+      "rows_whose_anchor_has_10_or_more_pairs": 0.921
+    },
+    "gene_any_cell": {
+      "distinct": 11135,
+      "pairs_per_anchor_median": 13.0,
+      "pairs_per_anchor_mean": 24.77,
+      "pairs_per_anchor_max": 562,
+      "rows_whose_anchor_has_10_or_more_pairs": 0.9262
+    }
+  },
+  "chromosomes": [
+    {
+      "chrom": "chr1",
+      "rows": 34153,
+      "positives": 3965,
+      "positive_rate": 0.1161,
+      "validation": false
+    },
+    {
+      "chrom": "chr2",
+      "rows": 11219,
+      "positives": 1932,
+      "positive_rate": 0.1722,
+      "validation": false
+    },
+    {
+      "chrom": "chr3",
+      "rows": 12076,
+      "positives": 1864,
+      "positive_rate": 0.1544,
+      "validation": false
+    },
+    {
+      "chrom": "chr4",
+      "rows": 3653,
+      "positives": 825,
+      "positive_rate": 0.2258,
+      "validation": false
+    },
+    {
+      "chrom": "chr5",
+      "rows": 8440,
+      "positives": 1700,
+      "positive_rate": 0.2014,
+      "validation": false
+    },
+    {
+      "chrom": "chr6",
+      "rows": 24684,
+      "positives": 2913,
+      "positive_rate": 0.118,
+      "validation": false
+    },
+    {
+      "chrom": "chr7",
+      "rows": 7639,
+      "positives": 1270,
+      "positive_rate": 0.1663,
+      "validation": false
+    },
+    {
+      "chrom": "chr8",
+      "rows": 5299,
+      "positives": 910,
+      "positive_rate": 0.1717,
+      "validation": false
+    },
+    {
+      "chrom": "chr9",
+      "rows": 13995,
+      "positives": 1135,
+      "positive_rate": 0.0811,
+      "validation": false
+    },
+    {
+      "chrom": "chr10",
+      "rows": 9292,
+      "positives": 1166,
+      "positive_rate": 0.1255,
+      "validation": false
+    },
+    {
+      "chrom": "chr11",
+      "rows": 21057,
+      "positives": 2581,
+      "positive_rate": 0.1226,
+      "validation": true
+    },
+    {
+      "chrom": "chr12",
+      "rows": 19842,
+      "positives": 2557,
+      "positive_rate": 0.1289,
+      "validation": false
+    },
+    {
+      "chrom": "chr13",
+      "rows": 1107,
+      "positives": 261,
+      "positive_rate": 0.2358,
+      "validation": false
+    },
+    {
+      "chrom": "chr14",
+      "rows": 8343,
+      "positives": 1193,
+      "positive_rate": 0.143,
+      "validation": false
+    },
+    {
+      "chrom": "chr15",
+      "rows": 8618,
+      "positives": 1380,
+      "positive_rate": 0.1601,
+      "validation": false
+    },
+    {
+      "chrom": "chr16",
+      "rows": 13216,
+      "positives": 1474,
+      "positive_rate": 0.1115,
+      "validation": false
+    },
+    {
+      "chrom": "chr17",
+      "rows": 21835,
+      "positives": 2604,
+      "positive_rate": 0.1193,
+      "validation": true
+    },
+    {
+      "chrom": "chr18",
+      "rows": 2933,
+      "positives": 525,
+      "positive_rate": 0.179,
+      "validation": false
+    },
+    {
+      "chrom": "chr19",
+      "rows": 28521,
+      "positives": 3070,
+      "positive_rate": 0.1076,
+      "validation": false
+    },
+    {
+      "chrom": "chr20",
+      "rows": 6880,
+      "positives": 977,
+      "positive_rate": 0.142,
+      "validation": false
+    },
+    {
+      "chrom": "chr21",
+      "rows": 2495,
+      "positives": 431,
+      "positive_rate": 0.1727,
+      "validation": false
+    },
+    {
+      "chrom": "chr22",
+      "rows": 8084,
+      "positives": 767,
+      "positive_rate": 0.0949,
+      "validation": false
+    },
+    {
+      "chrom": "chrX",
+      "rows": 2442,
+      "positives": 614,
+      "positive_rate": 0.2514,
+      "validation": false
+    }
+  ],
+  "positives_by_assay": {
+    "CTCF-ChIAPET": {
+      "rows": 29811,
+      "positive_rate": 0.0798,
+      "distance": {
+        "positive": {
+          "n": 2379,
+          "quantiles_kb": [
+            14.2,
+            26.3,
+            61.4,
+            137.7,
+            252.3
+          ]
+        },
+        "negative": {
+          "n": 27432,
+          "quantiles_kb": [
+            66.6,
+            158.3,
+            257.7,
+            331.4,
+            376.1
+          ]
+        }
+      }
+    },
+    "CTCF-ChIAPET+HiC": {
+      "rows": 4363,
+      "positive_rate": 0.1412,
+      "distance": {
+        "positive": {
+          "n": 616,
+          "quantiles_kb": [
+            37.1,
+            81.4,
+            179.7,
+            266.2,
+            345.5
+          ]
+        },
+        "negative": {
+          "n": 3747,
+          "quantiles_kb": [
+            78.5,
+            184.9,
+            265.5,
+            334.1,
+            373.0
+          ]
+        }
+      }
+    },
+    "CTCF-ChIAPET+HiC+RNAPII-ChIAPET": {
+      "rows": 1865,
+      "positive_rate": 0.3748,
+      "distance": {
+        "positive": {
+          "n": 699,
+          "quantiles_kb": [
+            15.3,
+            32.5,
+            68.6,
+            110.3,
+            155.6
+          ]
+        },
+        "negative": {
+          "n": 1166,
+          "quantiles_kb": [
+            40.7,
+            77.4,
+            126.7,
+            173.4,
+            200.7
+          ]
+        }
+      }
+    },
+    "CTCF-ChIAPET+RNAPII-ChIAPET": {
+      "rows": 15014,
+      "positive_rate": 0.3009,
+      "distance": {
+        "positive": {
+          "n": 4518,
+          "quantiles_kb": [
+            11.8,
+            18.8,
+            41.7,
+            84.1,
+            131.6
+          ]
+        },
+        "negative": {
+          "n": 10496,
+          "quantiles_kb": [
+            42.5,
+            76.5,
+            124.3,
+            169.3,
+            196.4
+          ]
+        }
+      }
+    },
+    "HiC": {
+      "rows": 146820,
+      "positive_rate": 0.0525,
+      "distance": {
+        "positive": {
+          "n": 7709,
+          "quantiles_kb": [
+            58.3,
+            113.0,
+            228.3,
+            425.3,
+            710.6
+          ]
+        },
+        "negative": {
+          "n": 139111,
+          "quantiles_kb": [
+            136.6,
+            326.7,
+            623.0,
+            1084.5,
+            1431.4
+          ]
+        }
+      }
+    },
+    "HiC+RNAPII-ChIAPET": {
+      "rows": 3301,
+      "positive_rate": 0.3211,
+      "distance": {
+        "positive": {
+          "n": 1060,
+          "quantiles_kb": [
+            13.9,
+            31.8,
+            50.7,
+            96.0,
+            147.0
+          ]
+        },
+        "negative": {
+          "n": 2241,
+          "quantiles_kb": [
+            34.8,
+            69.9,
+            124.9,
+            173.0,
+            199.6
+          ]
+        }
+      }
+    },
+    "RNAPII-ChIAPET": {
+      "rows": 74649,
+      "positive_rate": 0.2563,
+      "distance": {
+        "positive": {
+          "n": 19133,
+          "quantiles_kb": [
+            9.4,
+            14.5,
+            28.0,
+            55.3,
+            101.4
+          ]
+        },
+        "negative": {
+          "n": 55516,
+          "quantiles_kb": [
+            37.1,
+            70.9,
+            117.8,
+            165.7,
+            195.2
+          ]
+        }
+      }
+    }
+  },
+  "baselines": {
+    "trained_on_all_assays": {
+      "validation_hic": {
+        "distance_rank": {
+          "n": 20909,
+          "positive_rate": 0.0358,
+          "auroc": 0.7523,
+          "aupr": 0.1216
+        },
+        "distance_logistic": {
+          "n": 20909,
+          "positive_rate": 0.0358,
+          "auroc": 0.7523,
+          "aupr": 0.121
+        },
+        "distance_binned": {
+          "n": 20909,
+          "positive_rate": 0.0358,
+          "auroc": 0.7606,
+          "aupr": 0.0935
+        },
+        "gene_prior_only": {
+          "n": 20909,
+          "positive_rate": 0.0358,
+          "auroc": 0.5,
+          "aupr": 0.0358
+        },
+        "enhancer_prior_only": {
+          "n": 20909,
+          "positive_rate": 0.0358,
+          "auroc": 0.5,
+          "aupr": 0.0358
+        },
+        "distance_plus_locus_priors": {
+          "n": 20909,
+          "positive_rate": 0.0358,
+          "auroc": 0.7523,
+          "aupr": 0.121
+        },
+        "fraction_with_gene_seen_in_training": 0.0,
+        "distance": {
+          "positive": {
+            "n": 749,
+            "quantiles_kb": [
+              49.0,
+              91.6,
+              211.5,
+              544.8,
+              858.8
+            ]
+          },
+          "negative": {
+            "n": 20160,
+            "quantiles_kb": [
+              137.3,
+              329.8,
+              601.8,
+              1089.0,
+              1396.3
+            ]
+          }
+        }
+      },
+      "validation_all_assays": {
+        "distance_rank": {
+          "n": 42892,
+          "positive_rate": 0.1209,
+          "auroc": 0.8598,
+          "aupr": 0.4605
+        },
+        "distance_logistic": {
+          "n": 42892,
+          "positive_rate": 0.1209,
+          "auroc": 0.8598,
+          "aupr": 0.4603
+        },
+        "distance_binned": {
+          "n": 42892,
+          "positive_rate": 0.1209,
+          "auroc": 0.8592,
+          "aupr": 0.4787
+        },
+        "gene_prior_only": {
+          "n": 42892,
+          "positive_rate": 0.1209,
+          "auroc": 0.5,
+          "aupr": 0.1209
+        },
+        "enhancer_prior_only": {
+          "n": 42892,
+          "positive_rate": 0.1209,
+          "auroc": 0.5,
+          "aupr": 0.1209
+        },
+        "distance_plus_locus_priors": {
+          "n": 42892,
+          "positive_rate": 0.1209,
+          "auroc": 0.8598,
+          "aupr": 0.4604
+        },
+        "fraction_with_gene_seen_in_training": 0.0,
+        "distance": {
+          "positive": {
+            "n": 5185,
+            "quantiles_kb": [
+              10.2,
+              17.9,
+              40.2,
+              97.8,
+              193.9
+            ]
+          },
+          "negative": {
+            "n": 37707,
+            "quantiles_kb": [
+              60.9,
+              126.8,
+              272.4,
+              649.8,
+              1200.4
+            ]
+          }
+        }
+      },
+      "test": {
+        "distance_rank": {
+          "n": 37707,
+          "positive_rate": 0.1089,
+          "auroc": 0.7284,
+          "aupr": 0.1992
+        },
+        "distance_logistic": {
+          "n": 37707,
+          "positive_rate": 0.1089,
+          "auroc": 0.7284,
+          "aupr": 0.1992
+        },
+        "distance_binned": {
+          "n": 37707,
+          "positive_rate": 0.1089,
+          "auroc": 0.7151,
+          "aupr": 0.1893
+        },
+        "gene_prior_only": {
+          "n": 37707,
+          "positive_rate": 0.1089,
+          "auroc": 0.7063,
+          "aupr": 0.2828
+        },
+        "enhancer_prior_only": {
+          "n": 37707,
+          "positive_rate": 0.1089,
+          "auroc": 0.5194,
+          "aupr": 0.116
+        },
+        "distance_plus_locus_priors": {
+          "n": 37707,
+          "positive_rate": 0.1089,
+          "auroc": 0.779,
+          "aupr": 0.2446
+        },
+        "fraction_with_gene_seen_in_training": 0.6582,
+        "distance": {
+          "positive": {
+            "n": 4106,
+            "quantiles_kb": [
+              48.5,
+              76.8,
+              125.5,
+              223.8,
+              345.9
+            ]
+          },
+          "negative": {
+            "n": 33601,
+            "quantiles_kb": [
+              65.0,
+              155.6,
+              301.4,
+              430.4,
+              524.8
+            ]
+          }
+        }
+      },
+      "test_HMEC": {
+        "distance_rank": {
+          "n": 22305,
+          "positive_rate": 0.1025,
+          "auroc": 0.7726,
+          "aupr": 0.229
+        },
+        "distance_logistic": {
+          "n": 22305,
+          "positive_rate": 0.1025,
+          "auroc": 0.7726,
+          "aupr": 0.229
+        },
+        "distance_binned": {
+          "n": 22305,
+          "positive_rate": 0.1025,
+          "auroc": 0.7592,
+          "aupr": 0.218
+        },
+        "gene_prior_only": {
+          "n": 22305,
+          "positive_rate": 0.1025,
+          "auroc": 0.6972,
+          "aupr": 0.2565
+        },
+        "enhancer_prior_only": {
+          "n": 22305,
+          "positive_rate": 0.1025,
+          "auroc": 0.5164,
+          "aupr": 0.1132
+        },
+        "distance_plus_locus_priors": {
+          "n": 22305,
+          "positive_rate": 0.1025,
+          "auroc": 0.8137,
+          "aupr": 0.2754
+        },
+        "fraction_with_gene_seen_in_training": 0.6133,
+        "distance": {
+          "positive": {
+            "n": 2286,
+            "quantiles_kb": [
+              42.7,
+              56.3,
+              93.1,
+              182.9,
+              294.9
+            ]
+          },
+          "negative": {
+            "n": 20019,
+            "quantiles_kb": [
+              64.3,
+              143.2,
+              277.0,
+              402.9,
+              482.1
+            ]
+          }
+        }
+      },
+      "test_NHEK": {
+        "distance_rank": {
+          "n": 15402,
+          "positive_rate": 0.1182,
+          "auroc": 0.6948,
+          "aupr": 0.1804
+        },
+        "distance_logistic": {
+          "n": 15402,
+          "positive_rate": 0.1182,
+          "auroc": 0.6948,
+          "aupr": 0.1804
+        },
+        "distance_binned": {
+          "n": 15402,
+          "positive_rate": 0.1182,
+          "auroc": 0.6783,
+          "aupr": 0.1787
+        },
+        "gene_prior_only": {
+          "n": 15402,
+          "positive_rate": 0.1182,
+          "auroc": 0.7183,
+          "aupr": 0.3204
+        },
+        "enhancer_prior_only": {
+          "n": 15402,
+          "positive_rate": 0.1182,
+          "auroc": 0.5212,
+          "aupr": 0.124
+        },
+        "distance_plus_locus_priors": {
+          "n": 15402,
+          "positive_rate": 0.1182,
+          "auroc": 0.7537,
+          "aupr": 0.2216
+        },
+        "fraction_with_gene_seen_in_training": 0.7232,
+        "distance": {
+          "positive": {
+            "n": 1820,
+            "quantiles_kb": [
+              95.8,
+              109.4,
+              170.8,
+              286.3,
+              394.3
+            ]
+          },
+          "negative": {
+            "n": 13582,
+            "quantiles_kb": [
+              67.3,
+              177.6,
+              338.4,
+              502.1,
+              598.8
+            ]
+          }
+        }
+      }
+    },
+    "trained_on_hic": {
+      "validation_hic": {
+        "distance_rank": {
+          "n": 20909,
+          "positive_rate": 0.0358,
+          "auroc": 0.7523,
+          "aupr": 0.1216
+        },
+        "distance_logistic": {
+          "n": 20909,
+          "positive_rate": 0.0358,
+          "auroc": 0.731,
+          "aupr": 0.0845
+        },
+        "distance_binned": {
+          "n": 20909,
+          "positive_rate": 0.0358,
+          "auroc": 0.728,
+          "aupr": 0.0895
+        },
+        "gene_prior_only": {
+          "n": 20909,
+          "positive_rate": 0.0358,
+          "auroc": 0.5,
+          "aupr": 0.0358
+        },
+        "enhancer_prior_only": {
+          "n": 20909,
+          "positive_rate": 0.0358,
+          "auroc": 0.5,
+          "aupr": 0.0358
+        },
+        "distance_plus_locus_priors": {
+          "n": 20909,
+          "positive_rate": 0.0358,
+          "auroc": 0.7295,
+          "aupr": 0.0849
+        },
+        "fraction_with_gene_seen_in_training": 0.0,
+        "distance": {
+          "positive": {
+            "n": 749,
+            "quantiles_kb": [
+              49.0,
+              91.6,
+              211.5,
+              544.8,
+              858.8
+            ]
+          },
+          "negative": {
+            "n": 20160,
+            "quantiles_kb": [
+              137.3,
+              329.8,
+              601.8,
+              1089.0,
+              1396.3
+            ]
+          }
+        }
+      },
+      "validation_all_assays": {
+        "distance_rank": {
+          "n": 42892,
+          "positive_rate": 0.1209,
+          "auroc": 0.8598,
+          "aupr": 0.4605
+        },
+        "distance_logistic": {
+          "n": 42892,
+          "positive_rate": 0.1209,
+          "auroc": 0.7433,
+          "aupr": 0.2332
+        },
+        "distance_binned": {
+          "n": 42892,
+          "positive_rate": 0.1209,
+          "auroc": 0.6166,
+          "aupr": 0.1807
+        },
+        "gene_prior_only": {
+          "n": 42892,
+          "positive_rate": 0.1209,
+          "auroc": 0.5,
+          "aupr": 0.1209
+        },
+        "enhancer_prior_only": {
+          "n": 42892,
+          "positive_rate": 0.1209,
+          "auroc": 0.5,
+          "aupr": 0.1209
+        },
+        "distance_plus_locus_priors": {
+          "n": 42892,
+          "positive_rate": 0.1209,
+          "auroc": 0.7314,
+          "aupr": 0.2203
+        },
+        "fraction_with_gene_seen_in_training": 0.0,
+        "distance": {
+          "positive": {
+            "n": 5185,
+            "quantiles_kb": [
+              10.2,
+              17.9,
+              40.2,
+              97.8,
+              193.9
+            ]
+          },
+          "negative": {
+            "n": 37707,
+            "quantiles_kb": [
+              60.9,
+              126.8,
+              272.4,
+              649.8,
+              1200.4
+            ]
+          }
+        }
+      },
+      "test": {
+        "distance_rank": {
+          "n": 37707,
+          "positive_rate": 0.1089,
+          "auroc": 0.7284,
+          "aupr": 0.1992
+        },
+        "distance_logistic": {
+          "n": 37707,
+          "positive_rate": 0.1089,
+          "auroc": 0.7306,
+          "aupr": 0.2308
+        },
+        "distance_binned": {
+          "n": 37707,
+          "positive_rate": 0.1089,
+          "auroc": 0.729,
+          "aupr": 0.2203
+        },
+        "gene_prior_only": {
+          "n": 37707,
+          "positive_rate": 0.1089,
+          "auroc": 0.7009,
+          "aupr": 0.2899
+        },
+        "enhancer_prior_only": {
+          "n": 37707,
+          "positive_rate": 0.1089,
+          "auroc": 0.5303,
+          "aupr": 0.1297
+        },
+        "distance_plus_locus_priors": {
+          "n": 37707,
+          "positive_rate": 0.1089,
+          "auroc": 0.8067,
+          "aupr": 0.4095
+        },
+        "fraction_with_gene_seen_in_training": 0.6065,
+        "distance": {
+          "positive": {
+            "n": 4106,
+            "quantiles_kb": [
+              48.5,
+              76.8,
+              125.5,
+              223.8,
+              345.9
+            ]
+          },
+          "negative": {
+            "n": 33601,
+            "quantiles_kb": [
+              65.0,
+              155.6,
+              301.4,
+              430.4,
+              524.8
+            ]
+          }
+        }
+      },
+      "test_HMEC": {
+        "distance_rank": {
+          "n": 22305,
+          "positive_rate": 0.1025,
+          "auroc": 0.7726,
+          "aupr": 0.229
+        },
+        "distance_logistic": {
+          "n": 22305,
+          "positive_rate": 0.1025,
+          "auroc": 0.7764,
+          "aupr": 0.2941
+        },
+        "distance_binned": {
+          "n": 22305,
+          "positive_rate": 0.1025,
+          "auroc": 0.7442,
+          "aupr": 0.2454
+        },
+        "gene_prior_only": {
+          "n": 22305,
+          "positive_rate": 0.1025,
+          "auroc": 0.6836,
+          "aupr": 0.2665
+        },
+        "enhancer_prior_only": {
+          "n": 22305,
+          "positive_rate": 0.1025,
+          "auroc": 0.5282,
+          "aupr": 0.124
+        },
+        "distance_plus_locus_priors": {
+          "n": 22305,
+          "positive_rate": 0.1025,
+          "auroc": 0.8206,
+          "aupr": 0.4228
+        },
+        "fraction_with_gene_seen_in_training": 0.5567,
+        "distance": {
+          "positive": {
+            "n": 2286,
+            "quantiles_kb": [
+              42.7,
+              56.3,
+              93.1,
+              182.9,
+              294.9
+            ]
+          },
+          "negative": {
+            "n": 20019,
+            "quantiles_kb": [
+              64.3,
+              143.2,
+              277.0,
+              402.9,
+              482.1
+            ]
+          }
+        }
+      },
+      "test_NHEK": {
+        "distance_rank": {
+          "n": 15402,
+          "positive_rate": 0.1182,
+          "auroc": 0.6948,
+          "aupr": 0.1804
+        },
+        "distance_logistic": {
+          "n": 15402,
+          "positive_rate": 0.1182,
+          "auroc": 0.6946,
+          "aupr": 0.1804
+        },
+        "distance_binned": {
+          "n": 15402,
+          "positive_rate": 0.1182,
+          "auroc": 0.7227,
+          "aupr": 0.2255
+        },
+        "gene_prior_only": {
+          "n": 15402,
+          "positive_rate": 0.1182,
+          "auroc": 0.7256,
+          "aupr": 0.3321
+        },
+        "enhancer_prior_only": {
+          "n": 15402,
+          "positive_rate": 0.1182,
+          "auroc": 0.5328,
+          "aupr": 0.1369
+        },
+        "distance_plus_locus_priors": {
+          "n": 15402,
+          "positive_rate": 0.1182,
+          "auroc": 0.8022,
+          "aupr": 0.4035
+        },
+        "fraction_with_gene_seen_in_training": 0.6787,
+        "distance": {
+          "positive": {
+            "n": 1820,
+            "quantiles_kb": [
+              95.8,
+              109.4,
+              170.8,
+              286.3,
+              394.3
+            ]
+          },
+          "negative": {
+            "n": 13582,
+            "quantiles_kb": [
+              67.3,
+              177.6,
+              338.4,
+              502.1,
+              598.8
+            ]
+          }
+        }
+      }
+    }
+  },
+  "test_overlap_with_training": {
+    "all_assays": {
+      "test_rows": 37707,
+      "enhancer_gene_pair_seen_in_training": 6078,
+      "fraction": 0.1612,
+      "of_those_same_label_in_every_training_occurrence": 5214
+    },
+    "hic": {
+      "test_rows": 37707,
+      "enhancer_gene_pair_seen_in_training": 4148,
+      "fraction": 0.11,
+      "of_those_same_label_in_every_training_occurrence": 3793
+    }
+  }
+}

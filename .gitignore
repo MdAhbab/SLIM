@@ -21,6 +21,7 @@ figures/
 
 # Per-machine progress for run.py. Local to whoever is running the experiments.
 results/run_state.json
+results/**/run_state*.json
 results/logs/
 
 # Python

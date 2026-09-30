@@ -1,0 +1,40 @@
+{
+  "train_assays": [
+    "HiC"
+  ],
+  "modalities": "epi",
+  "chosen": "pilot_hic_nodna",
+  "metric": "val_aupr",
+  "keep_dna": false,
+  "pilots": {
+    "pilot_hic_dna": {
+      "train_assays": [
+        "HiC"
+      ],
+      "modalities": "all",
+      "val_aupr": 0.29262479838669553,
+      "val_auroc": 0.8556894938193973
+    },
+    "pilot_hic_nodna": {
+      "train_assays": [
+        "HiC"
+      ],
+      "modalities": "epi",
+      "val_aupr": 0.31568451656527835,
+      "val_auroc": 0.86642209254234
+    },
+    "pilot_all_dna": {
+      "train_assays": null,
+      "modalities": "all",
+      "val_aupr": 0.234816880320686,
+      "val_auroc": 0.8348506389506691
+    },
+    "pilot_all_nodna": {
+      "train_assays": null,
+      "modalities": "epi",
+      "val_aupr": 0.2315419232630887,
+      "val_auroc": 0.8409718676013185
+    }
+  },
+  "note": "chosen on validation only; test scores were not read"
+}

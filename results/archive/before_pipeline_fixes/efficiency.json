@@ -1,0 +1,61 @@
+{
+  "device": "cuda",
+  "gpu": "NVIDIA GeForce RTX 5070 Ti",
+  "torch": "2.14.0+cu130",
+  "platform": "Windows-10-10.0.22631-SP0",
+  "repeats": 30,
+  "models": {
+    "baseline": {
+      "parameters": 3529796,
+      "batch_size": 32,
+      "inference_ms_median": 54.3098087310791,
+      "inference_ms_p05": 54.241868782043454,
+      "inference_ms_p95": 54.40092220306396,
+      "inference_pairs_per_second": 589.2121653097963,
+      "peak_memory_mib_inference": 772.7451171875,
+      "train_step_ms_median": 149.3899999986752,
+      "train_pairs_per_second": 214.20443135607323,
+      "peak_memory_mib_training": 6601.67529296875,
+      "inference_latency_vs_baseline": 1.0
+    },
+    "A": {
+      "parameters": 4392095,
+      "batch_size": 32,
+      "inference_ms_median": 23.151232719421387,
+      "inference_ms_p05": 23.01912364959717,
+      "inference_ms_p95": 23.37607374191284,
+      "inference_pairs_per_second": 1382.2158149339257,
+      "peak_memory_mib_inference": 391.37841796875,
+      "train_step_ms_median": 65.46985000022687,
+      "train_pairs_per_second": 488.7746038808568,
+      "peak_memory_mib_training": 3138.8994140625,
+      "inference_latency_vs_baseline": 0.42628087375629
+    },
+    "KA": {
+      "parameters": 4302995,
+      "batch_size": 32,
+      "inference_ms_median": 56.86249542236328,
+      "inference_ms_p05": 56.72027778625488,
+      "inference_ms_p95": 57.06959819793701,
+      "inference_pairs_per_second": 562.761091688122,
+      "peak_memory_mib_inference": 820.84716796875,
+      "train_step_ms_median": 151.26695000071777,
+      "train_pairs_per_second": 211.54654073377006,
+      "peak_memory_mib_training": 6903.73779296875,
+      "inference_latency_vs_baseline": 1.0470023141477829
+    },
+    "GA": {
+      "parameters": 4392815,
+      "batch_size": 32,
+      "inference_ms_median": 23.316287994384766,
+      "inference_ms_p05": 23.098620891571045,
+      "inference_ms_p95": 23.751867294311523,
+      "inference_pairs_per_second": 1372.4311523217812,
+      "peak_memory_mib_inference": 397.64453125,
+      "train_step_ms_median": 66.70450000456185,
+      "train_pairs_per_second": 479.72775446651355,
+      "peak_memory_mib_training": 3212.83837890625,
+      "inference_latency_vs_baseline": 0.4293200167549455
+    }
+  }
+}

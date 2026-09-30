@@ -10,156 +10,156 @@
     "NHEK"
   ],
   "min_overlap": 0.5,
-  "n_train_pairs": 314610,
+  "n_train_pairs": 156349,
   "n_test_pairs": 37707,
-  "enhancer_reused": 12327,
-  "enhancer_reused_exact": 12327,
-  "promoter_reused": 27995,
-  "promoter_reused_exact": 27995,
-  "either_reused": 29802,
-  "both_reused": 10520,
-  "pair_reused": 6593,
-  "disjoint": 7905,
-  "disjoint_positive_rate": 0.1709044908285895,
+  "enhancer_reused": 6796,
+  "enhancer_reused_exact": 6796,
+  "promoter_reused": 25643,
+  "promoter_reused_exact": 25643,
+  "either_reused": 26978,
+  "both_reused": 5461,
+  "pair_reused": 4620,
+  "disjoint": 10729,
+  "disjoint_positive_rate": 0.154441234038587,
   "overall_positive_rate": 0.10889224812369055,
   "by_chromosome": [
     {
       "chrom": "chr1",
       "n": 3734,
-      "reused": 3185,
-      "fraction": 0.852972683449384
+      "reused": 2798,
+      "fraction": 0.7493304767005892
     },
     {
       "chrom": "chr2",
       "n": 2250,
-      "reused": 1724,
-      "fraction": 0.7662222222222222
+      "reused": 1472,
+      "fraction": 0.6542222222222223
     },
     {
       "chrom": "chr3",
       "n": 2646,
-      "reused": 1963,
-      "fraction": 0.7418745275888133
+      "reused": 1773,
+      "fraction": 0.6700680272108843
     },
     {
       "chrom": "chr4",
       "n": 557,
-      "reused": 377,
-      "fraction": 0.6768402154398564
+      "reused": 281,
+      "fraction": 0.5044883303411131
     },
     {
       "chrom": "chr5",
       "n": 1432,
-      "reused": 1061,
-      "fraction": 0.7409217877094972
+      "reused": 1004,
+      "fraction": 0.7011173184357542
     },
     {
       "chrom": "chr6",
       "n": 2129,
-      "reused": 1760,
-      "fraction": 0.8266791921089713
+      "reused": 1698,
+      "fraction": 0.7975575387505871
     },
     {
       "chrom": "chr7",
       "n": 1512,
-      "reused": 1240,
-      "fraction": 0.8201058201058201
+      "reused": 1127,
+      "fraction": 0.7453703703703703
     },
     {
       "chrom": "chr8",
       "n": 1317,
-      "reused": 1005,
-      "fraction": 0.7630979498861048
+      "reused": 951,
+      "fraction": 0.7220956719817767
     },
     {
       "chrom": "chr9",
       "n": 1118,
-      "reused": 890,
-      "fraction": 0.7960644007155635
+      "reused": 819,
+      "fraction": 0.7325581395348837
     },
     {
       "chrom": "chrX",
       "n": 418,
-      "reused": 335,
-      "fraction": 0.8014354066985646
+      "reused": 331,
+      "fraction": 0.7918660287081339
     },
     {
       "chrom": "chr10",
       "n": 976,
-      "reused": 748,
-      "fraction": 0.7663934426229508
+      "reused": 680,
+      "fraction": 0.6967213114754098
     },
     {
       "chrom": "chr11",
       "n": 5559,
-      "reused": 5057,
-      "fraction": 0.909695988487138
+      "reused": 4487,
+      "fraction": 0.8071595610721353
     },
     {
       "chrom": "chr12",
       "n": 3511,
-      "reused": 2289,
-      "fraction": 0.6519510111079464
+      "reused": 2042,
+      "fraction": 0.5816006835659356
     },
     {
       "chrom": "chr13",
       "n": 150,
-      "reused": 63,
-      "fraction": 0.42
+      "reused": 51,
+      "fraction": 0.34
     },
     {
       "chrom": "chr14",
       "n": 1354,
-      "reused": 1070,
-      "fraction": 0.7902511078286558
+      "reused": 961,
+      "fraction": 0.7097488921713442
     },
     {
       "chrom": "chr15",
       "n": 1209,
-      "reused": 1007,
-      "fraction": 0.8329197684036393
+      "reused": 983,
+      "fraction": 0.8130686517783292
     },
     {
       "chrom": "chr16",
       "n": 1425,
-      "reused": 1052,
-      "fraction": 0.7382456140350877
+      "reused": 939,
+      "fraction": 0.6589473684210526
     },
     {
       "chrom": "chr17",
       "n": 2314,
-      "reused": 1890,
-      "fraction": 0.8167675021607606
+      "reused": 1723,
+      "fraction": 0.7445980985306828
     },
     {
       "chrom": "chr18",
       "n": 714,
-      "reused": 456,
-      "fraction": 0.6386554621848739
+      "reused": 418,
+      "fraction": 0.5854341736694678
     },
     {
       "chrom": "chr19",
       "n": 2091,
-      "reused": 1819,
-      "fraction": 0.8699186991869918
+      "reused": 1684,
+      "fraction": 0.8053562888570062
     },
     {
       "chrom": "chr20",
       "n": 170,
-      "reused": 133,
-      "fraction": 0.7823529411764706
+      "reused": 119,
+      "fraction": 0.7
     },
     {
       "chrom": "chr21",
       "n": 50,
-      "reused": 45,
-      "fraction": 0.9
+      "reused": 36,
+      "fraction": 0.72
     },
     {
       "chrom": "chr22",
       "n": 1071,
-      "reused": 633,
-      "fraction": 0.5910364145658263
+      "reused": 601,
+      "fraction": 0.5611577964519141
     }
   ]
 }

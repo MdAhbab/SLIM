@@ -1,0 +1,125 @@
+paths:
+  bengi_dir: D:\E\AI Models\FYDP-Model\data\BENGI
+  feats_config: D:\E\AI Models\FYDP-Model\data\genomic_data\CTCF_DNase_6histone_local.500.json
+  ref_genome: D:\E\AI Models\FYDP-Model\data\hg19.fa
+data:
+  sequence_length: 6000
+  epigenetic_bins: 5000
+  n_epigenetic_features: 9
+  kmer_size: 3
+  batch_size: 32
+  bin_size: 500
+  seq_len_bp: 2500000
+  enhancer_window: 3000
+  promoter_window: 3000
+  encoder_fit_samples: 5000
+  encoder_fit: crossfit
+  modalities: epi
+  train_assays: &id001
+  - HiC
+  dedup: union
+  feats_order:
+  - CTCF
+  - DNase
+  - H3K27ac
+  - H3K27me3
+  - H3K36me3
+  - H3K4me1
+  - H3K4me3
+  - H3K9me3
+model:
+  hidden_dim: 180
+  num_heads: 6
+  num_layers: 3
+  n_tokens: 128
+  dropout: 0.1
+  head_dropout: 0.2
+  kan_hidden: 64
+  sa_da: 64
+  sa_r: 32
+  att_penalty: 0.1
+  drop_path_rate: 0.1
+  variant: A
+  memory:
+    local_window: 64
+    bin_slots: 16
+    bin_dim: 96
+    survivors_per_layer: 8
+    ffn_multiplier: 4
+    gate_temperature: 1.0
+    novelty_weight: 0.35
+    prediction_error_weight: 0.2
+    bin_decay: 0.92
+    bin_update: gru
+    use_learned_score: true
+    use_novelty: true
+    use_prediction_error: true
+    slot_addressing: content
+    prediction_target: position
+    memory_norm: written
+    respect_segments: true
+    gate_gradient: selected
+    selection_noise: 0.0
+training:
+  lr: 0.0001
+  epochs: 8
+  lambda_dist: 1.0
+  grad_clip: 1.0
+  patience: 2
+  weight_decay: 0.05
+  no_decay_1d: true
+  scheduler: warmup_cosine
+  warmup_fraction: 0.03
+  min_lr_ratio: 0.05
+  ema_decay: 0.999
+  train_eval_samples: 10000
+  use_cosine_scheduler: false
+  entropy_loss_weight: 0.01
+  diversity_loss_weight: 0.05
+  prediction_loss_weight: 1.0
+  use_amp: true
+  num_workers: 4
+  prefetch_factor: 2
+  persistent_workers: false
+  valid_chroms:
+  - chr11
+  - chr17
+  valid_assays:
+  - HiC
+augmentation:
+  enabled: true
+  rc_prob: 0.5
+  rc_mode: segment
+  epi_noise_std: 0.05
+  shift_max_bins: 3
+  shift_mode: tracks
+experiment_name: slim_a
+protocol:
+  file: results/protocol.json
+  train_assays: *id001
+  modalities: epi
+  chosen: pilot_hic_nodna
+_run:
+  seed: 2
+  split: cross-cell
+  train_cells:
+  - GM12878
+  - HeLa
+  - K562
+  - IMR90
+  test_cells:
+  - HMEC
+  - NHEK
+  valid_chroms:
+  - chr11
+  - chr17
+  total_params: 4392095
+  train_rows: 133928
+  val_rows: 22421
+  row_report:
+    rows_in: 163049
+    unique_pairs: 156349
+    duplicate_rows: 6700
+    pairs_repeated: 5930
+    pairs_with_conflicting_labels: 0
+    rows_out: 156349
