@@ -55,7 +55,7 @@ from torch.utils.data import DataLoader, Subset
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.bengi import bengi_files, read_rows, select_rows_for_config
+from src.bengi import bengi_files, fraction_of_rows, read_rows, select_rows_for_config
 from src.config import load_config
 from src.shutdown import run_main
 from src.dataset import EPIDataset
@@ -515,6 +515,14 @@ def main():
     train_idx, val_idx, held = build_splits(train_genomic, args, config)
     print(f"\nHeld-out chromosomes for validation: {held}")
     labels_all = train_genomic.get_labels()
+    fraction = config["data"].get("train_fraction", 1.0)
+    if fraction < 1.0:
+        # Learning curve over training-set size. The subset is fixed before
+        # anything is fitted, so the encoder and the clean training sample
+        # see only these rows; validation and test are unchanged.
+        full = len(train_idx)
+        train_idx = fraction_of_rows(train_idx, labels_all, fraction, args.seed)
+        print(f"Training fraction {fraction}: {len(train_idx):,} of {full:,} rows")
     train_labels = np.array([labels_all[i] for i in train_idx])
 
     print(f"\nFitting the POCD-ND encoder "
@@ -795,6 +803,7 @@ def main():
             dedup=np.array(config["data"].get("dedup", "none")),
             encoder_fit=np.array(config["data"].get("encoder_fit", "train")),
             train_rows=np.int64(len(train_idx)),
+            train_fraction=np.float64(fraction),
             val_rows=np.int64(len(val_idx)),
             valid_chroms=np.array(held),
             total_params=np.int64(total_params),

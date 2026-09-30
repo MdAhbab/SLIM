@@ -207,6 +207,7 @@ scripts/          entry points, one per job
                        paired tests, ensembles and all table fragments
                        (results/paper_numbers.json, results/tables/)
   paper_figures.py     the manuscript data figures, from paper_numbers.json
+  long_run_report.py   learning curves and data scaling of the long suite
 results/          one directory per model, holding per-example predictions
 tests/            run these before any long job
 ```
@@ -332,6 +333,8 @@ python run.py --from train_ka_seed0  # that stage and everything after it
 python run.py --redo train_a_seed0   # force a stage to run again
 python run.py --dry-run              # print the plan, run nothing
 python run.py --archive NAME         # move all results to results/archive/NAME/
+python run.py --suite long           # SLIM-GA and the baseline for up to 30 epochs,
+                                     # plus a learning curve over training-set size
 ```
 
 Each stage writes its console output to `results/logs/<stage>.log`. A failing

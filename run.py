@@ -23,6 +23,9 @@ That is the whole workflow. Other useful forms:
     python run.py --archive before_pipeline_fixes
                                    move every existing result into
                                    results/archive/<name>/ and start afresh
+    python run.py --suite long     the long-training suite: SLIM-GA and the
+                                   baseline for up to 30 epochs, and a
+                                   learning curve over training-set size
 
 Progress lives in `results/run_state.json`. Every stage also writes its console
 output to `results/logs/<stage>.log`, so a failure can be read afterwards.
@@ -233,6 +236,47 @@ def build_plan(seeds, extra_seeds=(3, 4)):
          "produces": "results/results.json", "minutes": 2,
          "why": "tables and figures, regenerated from the saved predictions"},
     ]
+    return plan
+
+
+def build_long_plan(seeds):
+    """The long-training suite: python run.py --suite long.
+
+    SLIM-GA, the SLIM variant with the best validation score in the main run,
+    trains for up to 30 epochs at every seed. Two runs on 25 and 50 percent of
+    the training rows give a learning curve over training-set size. The
+    baseline then repeats the long recipe, so the comparison stays matched.
+    The main results are not touched: every run writes to its own directory.
+    """
+    plan = [
+        # Named apart from the main suite's "tests" stage, so the suite
+        # re-runs the tests against the current checkout.
+        {"name": "tests_long",
+         "command": [PY, "-m", "pytest", "-q"],
+         "produces": None, "minutes": 2,
+         "why": "catch a broken checkout before spending hours on training"},
+    ]
+    for seed in seeds:
+        plan.append(training_stage(
+            f"train_ga_long_seed{seed}", "slim_ga_long", seed,
+            out=f"results/ga_long/seed{seed}", minutes=120,
+            why="SLIM-GA for up to 30 epochs: the full learning curve"))
+    for fraction in (25, 50):
+        plan.append(training_stage(
+            f"train_ga_long_frac{fraction}_seed0", f"slim_ga_long_frac{fraction}", 0,
+            out=f"results/ga_long_frac{fraction}/seed0",
+            minutes=40 if fraction == 25 else 70,
+            why=f"learning curve: {fraction} percent of the training rows"))
+    for seed in seeds:
+        plan.append(training_stage(
+            f"train_baseline_long_seed{seed}", "baseline_long", seed,
+            out=f"results/baseline_long/seed{seed}", minutes=200,
+            why="baseline under the same long recipe, for a matched comparison"))
+    plan.append(
+        {"name": "long_report",
+         "command": [PY, "scripts/long_run_report.py", "--out", "results/long"],
+         "produces": "results/long/long_report.json", "minutes": 2,
+         "why": "learning curves, long against standard training, data scaling"})
     return plan
 
 
@@ -531,7 +575,16 @@ def main():
                         help="print what would run, without running it")
     parser.add_argument("--skip-checks", action="store_true",
                         help="do not verify the environment first")
+    parser.add_argument("--suite", choices=["main", "long"], default="main",
+                        help="main: the full experiment; long: SLIM-GA and the "
+                             "baseline trained for up to 30 epochs, plus a "
+                             "learning curve over training-set size")
     args = parser.parse_args()
+
+    def make_plan():
+        if args.suite == "long":
+            return build_long_plan(args.seeds)
+        return build_plan(args.seeds, args.extra_seeds)
 
     print("=" * 78)
     print("  SLIM: full experiment run")
@@ -544,7 +597,7 @@ def main():
     if args.archive:
         return 0 if archive_results(args.archive) else 1
 
-    plan = build_plan(args.seeds, args.extra_seeds)
+    plan = make_plan()
     state = load_state()
 
     if args.redo:
@@ -603,9 +656,10 @@ def main():
         print("\nDry run, nothing was executed.")
         return 0
 
+    resume = "python run.py" + (" --suite long" if args.suite == "long" else "")
     print("\nSafe to interrupt at any time. Run this command again to "
           "continue:")
-    print("  python run.py\n")
+    print(f"  {resume}\n")
 
     started = time.time()
     failures = []
@@ -628,19 +682,19 @@ def main():
                     return 1
         except KeyboardInterrupt:
             print(f"\n\nInterrupted during {stage['name']}.")
-            print("Progress is saved. Continue with:  python run.py")
+            print(f"Progress is saved. Continue with:  {resume}")
             return 130
 
     elapsed = time.time() - started
     print("\n" + "=" * 78)
     print(f"  Finished in {timedelta(seconds=int(elapsed))}")
     print("=" * 78)
-    show_plan(build_plan(args.seeds, args.extra_seeds), load_state())
+    show_plan(make_plan(), load_state())
 
     if failures:
         print(f"\n  Stages that failed: {', '.join(failures)}")
         print(f"  Read the logs in {LOGS.relative_to(ROOT)}, then re-run "
-              f"'python run.py' to retry them.")
+              f"'{resume}' to retry them.")
         return 1
 
     print("\n  Everything finished. Send these back to the authors:")

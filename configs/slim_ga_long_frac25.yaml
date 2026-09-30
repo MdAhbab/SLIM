@@ -1,0 +1,11 @@
+# Learning curve over training-set size: SLIM-GA under the long recipe on a
+# fixed, class-stratified 25 percent of the training rows. Validation and
+# test are unchanged. If test accuracy still rises between 25, 50 and 100
+# percent, more training data (new cell lines or assays) should help.
+extends: slim_ga_long.yaml
+
+experiment_name: "slim_ga_long_frac25"
+output_name: "ga_long_frac25"
+
+data:
+  train_fraction: 0.25

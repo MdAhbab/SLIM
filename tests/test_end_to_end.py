@@ -270,3 +270,20 @@ def test_leakage_audit_runs_on_the_dataset(trained, tmp_path):
                           data["test_enh_coord"]), (
         "enhancer coordinates disagree between the audit and the saved "
         "predictions")
+
+
+def test_training_fraction_trains_on_a_subset(trained, tmp_path):
+    """data.train_fraction trains on a fixed share of the training rows only."""
+    config = yaml.safe_load(trained["config"].read_text())
+    config["data"]["train_fraction"] = 0.5
+    config["training"]["epochs"] = 1
+    half_config = tmp_path / "half.yaml"
+    half_config.write_text(yaml.safe_dump(config, sort_keys=False))
+    result = run_training(half_config, tmp_path / "half")
+    assert result.returncode == 0, result.stderr[-3000:]
+    full = np.load(trained["out"] / "eval_results.npz")
+    half = np.load(tmp_path / "half" / "eval_results.npz")
+    assert float(half["train_fraction"]) == 0.5
+    assert abs(int(half["train_rows"]) - int(full["train_rows"]) / 2) <= 2
+    assert int(half["val_rows"]) == int(full["val_rows"])
+    assert len(half["test_predictions"]) == len(full["test_predictions"])

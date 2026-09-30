@@ -1,0 +1,16 @@
+# Long training of SLIM-GA, the SLIM variant with the highest validation
+# score (sum of validation AUROC and AUPR, the checkpoint criterion) in the
+# main run. The standard recipe stops at eight epochs, and one SLIM-KA seed
+# reached its best validation score at that cap, so this run allows 30 epochs
+# with a cosine schedule stretched to match. Patience 8 records the part of
+# each curve after the validation peak, which shows how the model overfits.
+# The checkpoint that is tested is still the one with the best validation
+# score, so the test set plays no part in choosing it.
+extends: slim_ga.yaml
+
+experiment_name: "slim_ga_long"
+output_name: "ga_long"
+
+training:
+  epochs: 30
+  patience: 8

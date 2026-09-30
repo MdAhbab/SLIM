@@ -1,0 +1,10 @@
+# Learning curve over training-set size: SLIM-GA under the long recipe on a
+# fixed, class-stratified 50 percent of the training rows. At the same seed
+# this subset contains the 25 percent subset.
+extends: slim_ga_long.yaml
+
+experiment_name: "slim_ga_long_frac50"
+output_name: "ga_long_frac50"
+
+data:
+  train_fraction: 0.5

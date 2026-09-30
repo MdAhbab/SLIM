@@ -1,0 +1,11 @@
+# The global-attention baseline under the same long recipe as
+# slim_ga_long.yaml, so the long-training comparison stays matched: both
+# models get 30 epochs, the same stretched cosine schedule and patience 8.
+extends: baseline.yaml
+
+experiment_name: "baseline_long"
+output_name: "baseline_long"
+
+training:
+  epochs: 30
+  patience: 8

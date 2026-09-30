@@ -165,3 +165,28 @@ def select_rows_for_config(rows: List[Dict], held: Iterable[str],
                        train_assays=config["data"].get("train_assays"),
                        valid_assays=config["training"].get("valid_assays"),
                        dedup=config["data"].get("dedup", "none"))
+
+
+def fraction_of_rows(indices: Sequence[int], labels: Sequence[int],
+                     fraction: float, seed: int) -> List[int]:
+    """A fixed, class-stratified fraction of the training rows.
+
+    Used for learning curves over training-set size. Each class is shuffled
+    once with the seed and the first `fraction` of it is kept, so at one seed
+    the 25 percent subset lies inside the 50 percent subset, which lies inside
+    the full set. The positive rate stays that of the full set.
+    """
+    if not 0 < fraction <= 1:
+        raise ValueError(f"data.train_fraction must be in (0, 1], got {fraction}")
+    indices = list(indices)
+    if fraction == 1:
+        return indices
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    keep: List[int] = []
+    for cls in (0, 1):
+        pool = [i for i in indices if int(labels[i]) == cls]
+        order = rng.permutation(len(pool))
+        n = max(1, int(round(fraction * len(pool))))
+        keep += [pool[j] for j in order[:n]]
+    return sorted(keep)
