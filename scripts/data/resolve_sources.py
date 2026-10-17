@@ -193,6 +193,11 @@ def github_files(entry: Dict) -> List[Dict]:
     def walk(path: str):
         url = f"https://api.github.com/repos/{entry['repo']}/contents/{path}"
         listing = requests.get(url, params={"ref": entry["ref"]}, timeout=60).json()
+        if not isinstance(listing, list):
+            raise RuntimeError(
+                f"GitHub listing of {entry['repo']}/{path} failed: "
+                f"{listing.get('message')}. Unauthenticated requests are limited "
+                f"to 60 an hour; rerun later with --parts github")
         for item in listing:
             if item["type"] == "dir" and entry.get("recursive"):
                 walk(item["path"])
