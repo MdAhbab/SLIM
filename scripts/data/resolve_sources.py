@@ -104,19 +104,18 @@ def choose_ccre(cell: str, info: Dict) -> Optional[Dict]:
             "annotation_type": "candidate Cis-Regulatory Elements",
             "assembly": "hg19", "biosample_ontology.term_name": term,
             "field": ["accession", "description"]})
-        full = [a for a in annotations
-                if not str(a.get("description", "")).lower().startswith("high ")]
+        full = {f"/annotations/{a['accession']}/": a for a in annotations
+                if not str(a.get("description", "")).lower().startswith("high ")}
         files = []
-        for annotation in full:
-            detail = encode_json(f"/annotations/{annotation['accession']}/",
-                                 {"format": "json", "frame": "embedded"})
-            for f in detail.get("files", []):
-                if (isinstance(f, dict) and f.get("file_format") == "bed"
-                        and f.get("assembly") == "hg19"
-                        and f.get("status") == "released"):
-                    files.append((f.get("file_size") or 0, f["accession"],
-                                  annotation["accession"],
-                                  annotation.get("description")))
+        if full:
+            for f in encode_search(**{
+                    "type": "File", "file_format": "bed", "assembly": "hg19",
+                    "dataset": sorted(full),
+                    "field": ["accession", "file_size", "dataset"]}):
+                annotation = full.get(f.get("dataset"), {})
+                files.append((f.get("file_size") or 0, f["accession"],
+                              annotation.get("accession"),
+                              annotation.get("description")))
         if files:
             files.sort(reverse=True)
             size, accession, annotation, description = files[0]
@@ -250,13 +249,25 @@ def main():
                 url=roadmap["base_url"] + name, dest=f"tracks/roadmap/{name}")
 
     encode = manifest["encode"]
-    for cell, info in (manifest["cells"].items() if "encode" in parts else []):
-        needs_inputs = bool(info.get("group"))
-        print(f"  {cell:22s}", end=" ", flush=True)
+
+    def lookup(item):
+        cell, info = item
         entry: Dict = {"role": info["role"], "eid": info["eid"]}
+        if info.get("group"):
+            entry["ctcf"] = choose_ctcf(cell, info, encode["ctcf"])
+        if info["role"] != "pretrain":
+            entry["ccre"] = choose_ccre(cell, info)
+            entry["loops"] = choose_loops(cell, info, encode["loops"])
+        return cell, info, entry
+
+    cells = list(manifest["cells"].items()) if "encode" in parts else []
+    with ThreadPoolExecutor(4) as pool:
+        looked_up = list(pool.map(lookup, cells))
+    for cell, info, entry in looked_up:
+        needs_inputs = bool(info.get("group"))
+        print(f"  {cell:22s}", end=" ")
         if needs_inputs:
-            ctcf = choose_ctcf(cell, info, encode["ctcf"])
-            entry["ctcf"] = ctcf
+            ctcf = entry["ctcf"]
             if ctcf:
                 add(id=f"{cell} CTCF", group=info["group"], kind="ctcf", cell=cell,
                     url=ctcf["url"], size=ctcf["size"], md5=ctcf["md5"],
@@ -265,17 +276,14 @@ def main():
             else:
                 missing.append(f"{cell}: no CTCF peaks")
         if info["role"] != "pretrain":
-            ccre = choose_ccre(cell, info)
-            entry["ccre"] = ccre
+            ccre = entry["ccre"]
             if ccre:
                 add(id=f"{cell} cCREs", group="labels", kind="ccre", cell=cell,
                     url=ccre["url"], size=ccre["size"], md5=ccre["md5"],
                     dest=f"labels/ccre/{cell}_{ccre['accession']}.hg19.bed.gz")
             else:
                 missing.append(f"{cell}: no hg19 cell-type cCREs")
-            loops = choose_loops(cell, info, encode["loops"])
-            entry["loops"] = loops
-            for loop in loops:
+            for loop in entry["loops"]:
                 assay = "intactHiC" if loop["assay_title"] == "intact Hi-C" else "HiC"
                 add(id=f"{cell} {assay} loops {loop['accession']}", group="labels",
                     kind="loops", cell=cell, assay=assay, url=loop["url"],
