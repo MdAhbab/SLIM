@@ -1,6 +1,9 @@
 # Datasets, reference genome and preprocessed tracks. These are large and are
 # obtained from public sources; see the README for how to build data/.
-data/
+# datasets/ holds the downloads, processed files and frozen source list made by
+# scripts/data/ (sources: configs/data_sources.yaml).
+/data/
+/datasets/
 *.fa
 *.fa.gz
 *.fai

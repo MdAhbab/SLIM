@@ -1,0 +1,273 @@
+# Every external source behind the extended datasets.
+#
+# This file states what is wanted. `scripts/data/resolve_sources.py` turns it
+# into concrete download URLs (querying the ENCODE portal for accessions that
+# are chosen by rule rather than fixed here) and freezes the result in
+# datasets/resolved.json, so that every later download fetches exactly the
+# same files. `scripts/data/download.py` reads only resolved.json.
+#
+# The datasets/ directory is not version-controlled. It holds the downloads,
+# the processed files and the frozen source list.
+#
+# All coordinates end up in hg19. GRCh38 sources are lifted with UCSC liftOver.
+
+# Relative paths are taken from the repository root. SLIM_RAW and SLIM_OUT
+# override them, for example on a hosted notebook with its own scratch disk.
+roots:
+  raw: "datasets/raw"           # downloads, kept until processing is checked
+  out: "datasets/processed"     # what the training machine needs
+
+# Cell lines whose labels may never enter training, under every name a source
+# uses for them. audit_new_data.py fails if any training file carries one.
+test_only:
+  cells: ["HMEC", "NHEK", "HUVEC"]
+  aliases:
+    - "HMEC"
+    - "NHEK"
+    - "HUVEC"
+    - "mammary epithelial cell"
+    - "keratinocyte"
+    - "endothelial cell of umbilical vein"
+    - "foreskin keratinocyte"
+
+# The eight chromatin tracks, in the order configs/base.yaml reads them.
+marks: ["CTCF", "DNase", "H3K27ac", "H3K27me3", "H3K36me3", "H3K4me1",
+        "H3K4me3", "H3K9me3"]
+
+# Seven of the eight tracks come from the Roadmap consolidated MACS2 p-value
+# signal, the same files TransEPI used for the six BENGI cell lines; CTCF comes
+# from ENCODE peaks.
+roadmap:
+  base_url: "https://egg2.wustl.edu/roadmap/data/byFileType/signal/consolidated/macs2signal/pval/"
+  pattern: "{eid}-{mark}.pval.signal.bigwig"
+  marks: ["DNase", "H3K27ac", "H3K27me3", "H3K36me3", "H3K4me1", "H3K4me3",
+          "H3K9me3"]
+
+# One entry per cell or tissue. Keys:
+#   eid      Roadmap epigenome
+#   role     train | valid | test | pretrain (what Phase 2 may use it for)
+#   group    which download group fetches its tracks
+#   encode   ENCODE biosample term names, in order of preference, used to find
+#            CTCF peaks, cCREs and Hi-C loop calls
+#   ctcf     a fixed CTCF peak file (TransEPI's choice where it made one)
+#   jung     sample code in Jung et al. 2019 promoter capture Hi-C
+#            (column `cell` of GSE86189_all_interaction.po.txt.gz)
+#   javierre cell-type columns in Javierre et al. 2016 promoter capture Hi-C
+#   existing tracks already processed on the training PC
+cells:
+  # The six BENGI cell lines. Only HMEC's tracks are downloaded, to check that
+  # the processing here reproduces the published HMEC track files of TransEPI
+  # (see `reference` below).
+  GM12878: {eid: E116, role: train, existing: true,
+            encode: ["GM12878"], ctcf: ENCFF710VEH, jung: GM}
+  HeLa:    {eid: E117, role: train, existing: true, encode: ["HeLa-S3"], ctcf: ENCFF768OPK}
+  K562:    {eid: E123, role: train, existing: true, encode: ["K562"], ctcf: ENCFF738TKN}
+  IMR90:   {eid: E017, role: train, existing: true, encode: ["IMR-90"], ctcf: ENCFF453XKM, jung: IMR90}
+  HMEC:    {eid: E119, role: test, group: tracks-check, existing: true,
+            encode: ["mammary epithelial cell"], ctcf: ENCFF288RFS}
+  NHEK:    {eid: E127, role: test, existing: true, encode: ["keratinocyte"], ctcf: ENCFF226MQR}
+
+  # A third unseen test line: Rao 2014 measured it with the BENGI assay.
+  HUVEC:   {eid: E122, role: test, group: tracks-core,
+            encode: ["endothelial cell of umbilical vein"], ctcf: ENCFF002DBA}
+
+  # Held out whole for validation in Phase 2 (in situ Hi-C, like the test).
+  HepG2:   {eid: E118, role: valid, group: tracks-core, encode: ["HepG2"]}
+  A549:    {eid: E114, role: valid, group: tracks-core, encode: ["A549"]}
+
+  # New training candidates with labels.
+  Monocyte: {eid: E029, role: train, group: tracks-core,
+             encode: ["CD14-positive monocyte"], javierre: ["Mon"]}
+  Bcell:    {eid: E032, role: train, group: tracks-core,
+             encode: ["B cell", "naive B cell"], javierre: ["nB", "tB"]}
+  Tcell:    {eid: E034, role: train, group: tracks-core,
+             encode: ["CD4-positive, alpha-beta T cell", "T-cell",
+                      "naive thymus-derived CD4-positive, alpha-beta T cell"],
+             javierre: ["nCD4", "tCD4"]}
+  NK:       {eid: E046, role: train, group: tracks-core,
+             encode: ["natural killer cell"]}
+  H1:       {eid: E003, role: train, group: tracks-core, encode: ["H1"],
+             ctcf: ENCFF093VEE, jung: H1}
+  H1ME:     {eid: E004, role: train, group: tracks-pretrain,
+             encode: ["mesendoderm"], jung: ME}
+  H1TB:     {eid: E005, role: train, group: tracks-pretrain,
+             encode: ["trophoblast cell"], jung: TB}
+  H1MSC:    {eid: E006, role: train, group: tracks-pretrain,
+             encode: ["mesenchymal stem cell"], jung: MSC}
+  H1NPC:    {eid: E007, role: train, group: tracks-pretrain,
+             encode: ["neural progenitor cell", "neural stem progenitor cell"],
+             ctcf: ENCFF402JJK, jung: NPC}
+  Ovary:    {eid: E097, role: train, group: tracks-core, encode: ["ovary"],
+             ctcf: ENCFF261BWI, jung: OV2}
+  Pancreas: {eid: E098, role: train, group: tracks-core,
+             encode: ["body of pancreas", "pancreas"], ctcf: ENCFF867ERM, jung: PA}
+  Psoas:    {eid: E100, role: train, group: tracks-core,
+             encode: ["psoas muscle"], jung: PO3}
+  SmallIntestine: {eid: E109, role: train, group: tracks-pretrain,
+                   encode: ["small intestine", "Peyer's patch"], jung: SB}
+  Gastric:  {eid: E094, role: train, group: tracks-pretrain,
+             encode: ["stomach"], jung: GA}
+
+  # Chromatin only, for self-supervised pretraining in Phase 2.
+  MonocyteRO01746: {eid: E124, role: pretrain, group: tracks-core,
+                    encode: ["CD14-positive monocyte"]}
+  H9:          {eid: E008, role: pretrain, group: tracks-pretrain, encode: ["H9"]}
+  iPS15b:      {eid: E021, role: pretrain, group: tracks-pretrain, encode: ["iPS-15b"]}
+  iPS20b:      {eid: E022, role: pretrain, group: tracks-pretrain, encode: ["iPS-20b"]}
+  CD34:        {eid: E050, role: train, group: tracks-pretrain,
+                encode: ["common myeloid progenitor, CD34-positive"]}   # BENGI CD34 CHi-C
+  ForeskinFib1: {eid: E055, role: pretrain, group: tracks-pretrain,
+                 encode: ["foreskin fibroblast"]}
+  ForeskinFib2: {eid: E056, role: pretrain, group: tracks-pretrain,
+                 encode: ["foreskin fibroblast"]}
+  ForeskinMel: {eid: E059, role: pretrain, group: tracks-pretrain,
+                encode: ["foreskin melanocyte"]}
+  FetalAdrenal: {eid: E080, role: pretrain, group: tracks-pretrain,
+                 encode: ["adrenal gland"]}
+  FetalLargeIntestine: {eid: E084, role: pretrain, group: tracks-pretrain,
+                        encode: ["large intestine"]}
+  FetalSmallIntestine: {eid: E085, role: pretrain, group: tracks-pretrain,
+                        encode: ["small intestine"]}
+  FetalMuscleTrunk: {eid: E089, role: pretrain, group: tracks-pretrain,
+                     encode: ["muscle of trunk"]}
+  FetalMuscleLeg: {eid: E090, role: pretrain, group: tracks-pretrain,
+                   encode: ["muscle of leg"]}
+  Placenta:    {eid: E091, role: pretrain, group: tracks-pretrain, encode: ["placenta"]}
+  FetalStomach: {eid: E092, role: pretrain, group: tracks-pretrain, encode: ["stomach"]}
+  FetalThymus: {eid: E093, role: pretrain, group: tracks-pretrain, encode: ["thymus"]}
+  HSMM:        {eid: E120, role: pretrain, group: tracks-pretrain,
+                encode: ["skeletal muscle myoblast"]}
+  HSMMtube:    {eid: E121, role: pretrain, group: tracks-pretrain,
+                encode: ["myotube"]}
+  NHA:         {eid: E125, role: pretrain, group: tracks-pretrain, encode: ["astrocyte"]}
+  NHDF:        {eid: E126, role: pretrain, group: tracks-pretrain,
+                encode: ["fibroblast of dermis"]}
+  NHLF:        {eid: E128, role: pretrain, group: tracks-pretrain,
+                encode: ["fibroblast of lung"]}
+
+# Fixed files. `group` decides which download run fetches them.
+static:
+  - name: hg38ToHg19 chain
+    group: tools
+    url: "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/liftOver/hg38ToHg19.over.chain.gz"
+    dest: "tools/hg38ToHg19.over.chain.gz"
+  - name: hg19 chromosome sizes
+    group: tools
+    url: "https://hgdownload.soe.ucsc.edu/goldenPath/hg19/bigZips/hg19.chrom.sizes"
+    dest: "tools/hg19.chrom.sizes"
+  - name: ENCODE hg19 blacklist v2 (Amemiya et al. 2019)
+    group: tools
+    url: "https://github.com/Boyle-Lab/Blacklist/raw/master/lists/hg19-blacklist.v2.bed.gz"
+    dest: "tools/hg19-blacklist.v2.bed.gz"
+  - name: BENGI cCRE registry (Moore et al. 2020)
+    group: tools
+    url: "https://raw.githubusercontent.com/weng-lab/BENGI/master/Benchmark/Annotations/hg19-cCREs.bed.gz"
+    dest: "bengi/hg19-cCREs.bed.gz"
+  - name: BENGI GENCODE v19 TSSs
+    group: tools
+    url: "https://raw.githubusercontent.com/weng-lab/BENGI/master/Benchmark/Annotations/GENCODEv19-TSSs.bed.gz"
+    dest: "bengi/GENCODEv19-TSSs.bed.gz"
+
+  # Rao et al. 2014 in situ Hi-C loop lists (hg19). HMEC and NHEK are only
+  # used to check that the ported BENGI script rebuilds the published files.
+  - {name: Rao 2014 HUVEC loops, group: labels,
+     url: "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE63nnn/GSE63525/suppl/GSE63525_HUVEC_HiCCUPS_looplist.txt.gz",
+     dest: "labels/rao2014/GSE63525_HUVEC_HiCCUPS_looplist.txt.gz"}
+  - {name: Rao 2014 HMEC loops, group: labels,
+     url: "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE63nnn/GSE63525/suppl/GSE63525_HMEC_HiCCUPS_looplist.txt.gz",
+     dest: "labels/rao2014/GSE63525_HMEC_HiCCUPS_looplist.txt.gz"}
+  - {name: Rao 2014 NHEK loops, group: labels,
+     url: "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE63nnn/GSE63525/suppl/GSE63525_NHEK_HiCCUPS_looplist.txt.gz",
+     dest: "labels/rao2014/GSE63525_NHEK_HiCCUPS_looplist.txt.gz"}
+  - {name: Rao 2014 GM12878 loops, group: labels,
+     url: "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE63nnn/GSE63525/suppl/GSE63525_GM12878_primary+replicate_HiCCUPS_looplist.txt.gz",
+     dest: "labels/rao2014/GSE63525_GM12878_primary+replicate_HiCCUPS_looplist.txt.gz"}
+
+  # Jung et al. 2019 promoter capture Hi-C, significant interactions of all
+  # 27 samples (promoter-other and promoter-promoter).
+  - {name: Jung 2019 PCHi-C promoter-other, group: labels,
+     url: "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE86nnn/GSE86189/suppl/GSE86189_all_interaction.po.txt.gz",
+     dest: "labels/jung2019/GSE86189_all_interaction.po.txt.gz"}
+  - {name: Jung 2019 PCHi-C promoter-promoter, group: labels,
+     url: "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE86nnn/GSE86189/suppl/GSE86189_all_interaction.pp.txt.gz",
+     dest: "labels/jung2019/GSE86189_all_interaction.pp.txt.gz"}
+
+  # Evaluation sets.
+  - {name: ENCODE-rE2G CRISPR benchmark, K562, group: eval,
+     url: "https://raw.githubusercontent.com/EngreitzLab/CRISPR_comparison/main/resources/crispr_data/EPCrisprBenchmark_combined_data.training_K562.GRCh38.tsv.gz",
+     dest: "eval/crispr/EPCrisprBenchmark_combined_data.training_K562.GRCh38.tsv.gz"}
+  - {name: ENCODE-rE2G CRISPR benchmark, held-out cells, group: eval,
+     url: "https://raw.githubusercontent.com/EngreitzLab/CRISPR_comparison/main/resources/crispr_data/EPCrisprBenchmark_combined_data.heldout_5_cell_types.GRCh38.tsv.gz",
+     dest: "eval/crispr/EPCrisprBenchmark_combined_data.heldout_5_cell_types.GRCh38.tsv.gz"}
+  - {name: ABC predictions (Nasser et al. 2021), group: eval,
+     url: "https://mitra.stanford.edu/engreitz/oak/public/Nasser2021/AllPredictions.AvgHiC.ABC0.015.minus150.ForABCPaperV3.txt.gz",
+     dest: "eval/abc/AllPredictions.AvgHiC.ABC0.015.minus150.ForABCPaperV3.txt.gz"}
+
+# GitHub folders whose files are fetched one by one (data files only; no code
+# from these repositories is run).
+github_folders:
+  - {name: BENGI benchmarks (Moore et al. 2020), group: labels,
+     repo: weng-lab/BENGI, ref: master,
+     paths: ["Benchmark/All-Pairs.Natural-Ratio"], dest: "labels/bengi"}
+  - {name: BENGI generation scripts, group: tools,
+     repo: weng-lab/BENGI, ref: master,
+     paths: ["Scripts/Generate-Benchmark"], dest: "reference/bengi_scripts"}
+  - {name: TransEPI HMEC track files and annotation (reference for the processing check),
+     group: tools, repo: biomed-AI/TransEPI, ref: main,
+     paths: ["data/genomic_data", "data/annotation", "data/BENGI"], recursive: false,
+     suffixes: [".pt", ".json", ".bed", ".tsv.gz"], dest: "reference/transepi"}
+  - {name: TargetFinder pairs (Whalen et al. 2016), group: eval,
+     repo: shwhalen/targetfinder, ref: master,
+     paths: ["paper/targetfinder/GM12878/output-ep", "paper/targetfinder/HeLa-S3/output-ep",
+             "paper/targetfinder/HUVEC/output-ep", "paper/targetfinder/IMR90/output-ep",
+             "paper/targetfinder/K562/output-ep", "paper/targetfinder/NHEK/output-ep"],
+     only: ["pairs.csv"], dest: "eval/targetfinder"}
+  - {name: CBOEP2 negative sets (Maruyama and Koga 2025), group: eval,
+     repo: maruyama-lab-design/CBOEP2, ref: main,
+     paths: ["input_to_EPI_predictor"], recursive: true, dest: "eval/cboep2"}
+
+# eQTL Catalogue SuSiE credible sets (GRCh38), study/dataset identifiers from
+# the release metadata. Only the credible-set table is fetched.
+eqtl:
+  base_url: "https://ftp.ebi.ac.uk/pub/databases/spot/eQTL/susie/"
+  datasets:
+    - {study: QTS000013, dataset: QTD000110, label: "GEUVADIS LCL"}
+    - {study: QTS000015, dataset: QTD000221, label: "GTEx LCL"}
+    - {study: QTS000015, dataset: QTD000216, label: "GTEx fibroblast"}
+    - {study: QTS000012, dataset: QTD000100, label: "GENCORD fibroblast"}
+    - {study: QTS000002, dataset: QTD000021, label: "BLUEPRINT monocyte"}
+    - {study: QTS000024, dataset: QTD000409, label: "Quach monocyte"}
+    - {study: QTS000026, dataset: QTD000474, label: "Schmiedel naive B cell"}
+    - {study: QTS000026, dataset: QTD000479, label: "Schmiedel naive CD4 T cell"}
+    - {study: QTS000026, dataset: QTD000509, label: "Schmiedel NK cell"}
+    - {study: QTS000015, dataset: QTD000281, label: "GTEx muscle"}
+    - {study: QTS000015, dataset: QTD000291, label: "GTEx ovary"}
+    - {study: QTS000015, dataset: QTD000296, label: "GTEx pancreas"}
+    - {study: QTS000015, dataset: QTD000321, label: "GTEx small intestine"}
+    - {study: QTS000015, dataset: QTD000331, label: "GTEx stomach"}
+    - {study: QTS000016, dataset: QTD000361, label: "HipSci iPSC"}
+    - {study: QTS000015, dataset: QTD000316, label: "GTEx skin (sun exposed), test context"}
+
+# ENCODE portal queries, resolved to accessions by resolve_sources.py.
+encode:
+  ctcf:          # one peak file per cell; hg19 preferred, GRCh38 lifted
+    output_types: ["optimal IDR thresholded peaks", "conservative IDR thresholded peaks",
+                   "pseudoreplicated IDR thresholded peaks", "IDR thresholded peaks",
+                   "replicated peaks", "pseudo-replicated peaks"]
+  ccre:          # the full hg19 cell-type cCRE set (Registry v1)
+    assembly: hg19
+  loops:         # Hi-C loop calls; ChIA-PET and 5C are not used
+    assays: ["in situ Hi-C", "intact Hi-C"]
+  hct116:        # optional CRISPR test cell, kept only if the scale check passes
+    biosample: "HCT116"
+    histone_marks: ["H3K27ac", "H3K27me3", "H3K36me3", "H3K4me1", "H3K4me3", "H3K9me3"]
+
+# Downloaded by hand (steps in datasets/README.md).
+manual:
+  - name: Javierre et al. 2016 promoter capture Hi-C peak matrix
+    file: "PCHiC_peak_matrix_cutoff5.tsv"
+    where: "https://osf.io/u8tzp/ (Files, then the peak matrix folder)"
+    dest: "manual/javierre/PCHiC_peak_matrix_cutoff5.tsv"
+  - name: HiChIPdb cohesin (SMC1A) and H3K27ac HiChIP loops
+    where: "http://health.tsinghua.edu.cn/hichipdb/"
+    dest: "manual/hichipdb/"

@@ -176,7 +176,7 @@ than quietly invalidating an ablation.
 
 ```
 run.py            runs every stage in order, resuming after interruptions
-configs/          base.yaml plus one thin overlay per model
+configs/          base.yaml, one thin overlay per model, data_sources.yaml
 src/              library code
   config.py            configuration loading with inheritance
   bengi.py             the one BENGI parser, repeat merging, assay selection
@@ -208,6 +208,8 @@ scripts/          entry points, one per job
                        (results/paper_numbers.json, results/tables/)
   paper_figures.py     the manuscript data figures, from paper_numbers.json
   long_run_report.py   learning curves and data scaling of the long suite
+  data/                sources, downloads, track binning, pair building and
+                       the audit for the extended datasets
 results/          one directory per model, holding per-example predictions
 tests/            run these before any long job
 ```
@@ -234,7 +236,7 @@ Check the installation without any data:
 
 ```bash
 python run.py --check              # packages, GPU, disk, data files
-python -m pytest -q                # 53 tests, about 20 seconds
+python -m pytest -q                # 78 tests, about 40 seconds
 python -m pytest -q -m slow        # end to end on synthetic data, about 45 seconds
 ```
 
@@ -300,6 +302,36 @@ python -c "import pyfaidx; pyfaidx.Fasta('data/hg19.fa')"   # builds the index
 If the genome or `pyfaidx` is missing, the sequence branch silently receives
 placeholder sequences and the results are meaningless. The index step above
 fails loudly if something is wrong, so run it.
+
+### Extended datasets
+
+`scripts/data/` builds further cell types and evaluation sets in the same
+formats, from the public sources listed in `configs/data_sources.yaml`. The
+sources are:
+
+- Roadmap Epigenomics p-value tracks for 38 further epigenomes;
+- ENCODE CTCF peaks, cell-type cCREs and Hi-C loop calls;
+- Rao et al. 2014 and Jung et al. 2019 contacts;
+- the ENCODE-rE2G CRISPR benchmark, ABC predictions, eQTL Catalogue credible
+  sets, TargetFinder and CBOEP2.
+
+Everything is written under `datasets/`, which is not version-controlled.
+
+```bash
+bash scripts/data/setup_wsl.sh            # Linux or WSL: pyBigWig, bedtools, liftOver
+python scripts/data/resolve_sources.py    # freeze accessions to datasets/resolved.json
+python scripts/data/download.py --groups all
+python scripts/data/prepare_tracks.py --groups all   # 500 bp tracks, as above
+python scripts/data/build_pairs.py --all             # BENGI-style pairs from loops
+python scripts/data/audit_new_data.py                # test-cell and repeat rules
+```
+
+`prepare_tracks.py` reproduces the conversion behind the existing track files.
+It takes the mean per 500 bp bin and then arcsinh for the bigWig tracks, and
+the overlap-weighted signalValue for the CTCF peaks. `build_pairs.py` is a
+port of BENGI's own benchmark script. Test cell lines (HMEC, NHEK, HUVEC) only
+ever reach `BENGI_extra_test/`, and `audit_new_data.py` fails if a training
+file names one.
 
 ## Running everything
 
