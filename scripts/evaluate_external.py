@@ -116,7 +116,9 @@ def main():
         seed = run.name.replace("seed", "")
         tag = f"{run.parent.name}_seed{seed}"
         for test in map(Path, args.tests):
-            name = test.name.replace("-Benchmark.v3.tsv.gz", "")
+            # Benchmark files may arrive gzipped or not (Kaggle unpacks them).
+            stem = test.name.removesuffix(".gz").removesuffix(".tsv")
+            name = stem.replace("-Benchmark.v3", "")
             dest = out / name / f"{tag}.npz"
             if dest.exists():
                 print(f"  {tag} on {name}: done before, skipped")
@@ -140,7 +142,7 @@ def main():
             entry = {k: metrics.get(k) for k in ("auroc", "aupr", "f1", "mcc")}
             entry.update(rows=len(genomic), positives=int(metrics["labels"].sum()))
             summary.setdefault(name, {})[tag] = entry
-            abc = Path(args.abc_dir) / test.name.replace(".tsv.gz", ".abc.npy")
+            abc = Path(args.abc_dir) / f"{stem}.abc.npy"
             if abc.exists() and "ABC" not in summary[name]:
                 scores = np.load(abc)
                 m = compute_all_metrics(metrics["labels"], scores)
