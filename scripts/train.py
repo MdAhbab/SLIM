@@ -382,10 +382,25 @@ def build_splits(train_genomic, args, config):
     return train_idx, val_idx, sorted(held)
 
 
+def tracked_cells(config) -> set:
+    """Cells whose feature list names every track the model reads (any track,
+    when presence channels mark the missing ones)."""
+    path = config["paths"].get("feats_config", "")
+    if not path or not os.path.exists(path):
+        return set()
+    with open(path) as handle:
+        listed = {c: m for c, m in json.load(handle).items() if isinstance(m, dict)}
+    if config["data"].get("presence_channels", False):
+        return set(listed)
+    marks = set(config["data"].get("feats_order") or [])
+    return {c for c, m in listed.items() if marks <= set(m)}
+
+
 def training_cells(config, args, folders) -> List[str]:
     """Cell lines that may be trained on. data.train_cells "all" takes every
     cell with a benchmark file in the folders except the test cells, the
-    validation cells and those in data.never_train."""
+    validation cells and those in data.never_train, and only those whose
+    tracks are complete (a cell without them would train on zeros)."""
     named = config["data"].get("train_cells")
     if named is None:
         return list(args.train_cells)
@@ -395,7 +410,11 @@ def training_cells(config, args, folders) -> List[str]:
              for f in glob.glob(os.path.join(folder, "*.tsv*"))}
     banned = (set(args.test_cells) | set(config["training"].get("valid_cells") or [])
               | set(config["data"].get("never_train") or []))
-    return sorted(found - banned)
+    tracked = tracked_cells(config)
+    untracked = sorted((found - banned) - tracked)
+    if untracked:
+        print(f"  Not trained on, tracks incomplete: {untracked}")
+    return sorted((found - banned) & tracked)
 
 
 def extended_rows(config, files):
@@ -413,10 +432,15 @@ def extended_rows(config, files):
     valid_cells = set(train_cfg["valid_cells"])
     train_assays = data.get("train_assays") or None
     valid_assays = train_cfg.get("valid_assays") or None
+    # Label sources named in the file names ("" for BENGI's own files and for
+    # files named by assay only); None keeps every source.
+    train_sources = data.get("train_sources")
 
     def keep(row):
-        wanted = valid_assays if row["cell"] in valid_cells else train_assays
-        return wanted is None or row["assay"] in wanted
+        if row["cell"] in valid_cells:
+            return valid_assays is None or row["assay"] in valid_assays
+        return ((train_assays is None or row["assay"] in train_assays)
+                and (train_sources is None or row["source"] in train_sources))
 
     table = PairTable.from_files(files, keep)
     table, report = table.deduplicate(data.get("dedup", "none"))

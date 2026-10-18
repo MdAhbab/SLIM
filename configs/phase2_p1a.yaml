@@ -1,0 +1,10 @@
+# Pilot P1a: every cell with complete tracks, Hi-C labels only (in situ and
+# intact Hi-C: BENGI, Rao and ENCODE loop calls).
+extends: phase2_pilot.yaml
+
+experiment_name: "phase2_p1a"
+output_name: "phase2_p1a"
+
+data:
+  train_cells: "all"
+  train_assays: ["HiC", "intactHiC"]

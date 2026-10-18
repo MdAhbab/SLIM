@@ -207,7 +207,7 @@ def test_extended_rows_split_by_cell_and_drop_eval_pairs(tmp_path):
     test_file = tmp_path / "test" / "X.HiC_rao2014-Benchmark.v3.tsv.gz"
     write_gz(test_file, [bengi_row(1, "X", "E2", "G2", start=300_000)])
     config = {"data": {"train_assays": ["HiC", "PCHiC"], "dedup": "union",
-                       "exclude_eval_pairs": True},
+                       "exclude_eval_pairs": True, "train_sources": None},
               "training": {"valid_cells": ["V"], "valid_assays": ["HiC"]},
               "paths": {"exclusion_files": [str(tmp_path / "test" / "*.tsv.gz")]}}
     files = sorted(str(p) for p in tmp_path.glob("*.tsv.gz"))
@@ -216,6 +216,9 @@ def test_extended_rows_split_by_cell_and_drop_eval_pairs(tmp_path):
     assert kept == {"E5", "E6"}            # E1 repeats validation, E2 repeats test
     assert [table.row(i)["enh_id"] for i in val_idx] == ["E1"]   # intact Hi-C left out
     assert report["rows_removed_as_eval_pairs"] == 2
+    config["data"]["train_sources"] = [""]               # BENGI-style files only
+    table, train_idx, _, _ = train.extended_rows(config, files)
+    assert {table.row(i)["enh_id"] for i in train_idx} == {"E5"}
 
 
 def test_all_training_cells_never_include_held_out_ones(tmp_path):
@@ -227,9 +230,14 @@ def test_all_training_cells_never_include_held_out_ones(tmp_path):
         train_cells = ["A"]
         test_cells = ["HMEC"]
 
-    config = {"data": {"train_cells": "all", "never_train": ["HUVEC"]},
-              "training": {"valid_cells": ["V"]}}
-    assert train.training_cells(config, Args, [str(tmp_path)]) == ["A", "B"]
+    feats = tmp_path / "features.json"
+    feats.write_text(json.dumps({"_location": ".", "A": {"DNase": "a.pt"},
+                                 "V": {"DNase": "v.pt"}}))
+    config = {"data": {"train_cells": "all", "never_train": ["HUVEC"],
+                       "feats_order": ["DNase"]},
+              "training": {"valid_cells": ["V"]}, "paths": {"feats_config": str(feats)}}
+    # B has a benchmark file but no tracks, so it is left out.
+    assert train.training_cells(config, Args, [str(tmp_path)]) == ["A"]
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,11 @@
+# Pilot P0: the September training rows (BENGI's own Hi-C files of its four
+# cell lines) under the extended protocol, against which P1a and P1b are read.
+extends: phase2_pilot.yaml
+
+experiment_name: "phase2_p0"
+output_name: "phase2_p0"
+
+data:
+  train_cells: ["GM12878", "HeLa", "K562", "IMR90"]
+  train_assays: ["HiC"]
+  train_sources: [""]

@@ -1,0 +1,10 @@
+# Pilot P1b: as P1a, plus promoter capture Hi-C labels (Jung 2019 and
+# Javierre 2016).
+extends: phase2_pilot.yaml
+
+experiment_name: "phase2_p1b"
+output_name: "phase2_p1b"
+
+data:
+  train_cells: "all"
+  train_assays: ["HiC", "intactHiC", "PCHiC"]

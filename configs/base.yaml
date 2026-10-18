@@ -57,6 +57,8 @@ data:
                              # folders except the test, validation and
                              # never_train cells; or a list
   never_train: []            # cells that may never be trained on
+  train_sources: null        # label sources to train on, as named in the
+                             # file names ("" for BENGI's own); null: all
   exclude_eval_pairs: false  # drop training rows that repeat a validation or
                              # test pair (same enhancer and gene)
   presence_channels: false   # one channel per track, 1 where the cell has it;
