@@ -25,8 +25,11 @@ Usage:
     python scripts/data/prepare_tracks.py --cells HUVEC HepG2
     python scripts/data/prepare_tracks.py --groups tracks-pretrain --download --delete-raw
 
-The output goes to <out>/tracks (the GM12878 check files to <out>/check), and
-<out>/features_new_cells.json lists every cell whose eight files are complete.
+The output goes to <out>/tracks. Two feature lists name the cells whose eight
+files are complete: <out>/features.json every such cell, the six BENGI cell
+lines included, and <out>/features_new_cells.json only the cells that are not
+among those six, for merging with the training PC's own list
+(merge_features.py).
 """
 
 from __future__ import annotations
@@ -41,7 +44,7 @@ import sys
 import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Set
 
 import numpy as np
 
@@ -177,7 +180,6 @@ def convert(job: Dict) -> Dict:
 
 def plan_jobs(resolved: Dict, cells: List[str], groups: List[str],
               raw: Path, out: Path, delete_raw: bool, stage: str = None) -> List[Dict]:
-    manifest = load_manifest()
     jobs = []
     for record in resolved["files"]:
         if record["kind"] not in ("track", "ctcf", "hct116"):
@@ -191,8 +193,7 @@ def plan_jobs(resolved: Dict, cells: List[str], groups: List[str],
         mark = record.get("mark", "CTCF") if record["kind"] != "ctcf" else "CTCF"
         peaks = record["kind"] == "ctcf" or src.name.endswith(".bed.gz")
         prefix = "narrowPeak" if peaks else "bigWig"
-        folder = "check" if manifest["cells"].get(cell, {}).get("existing") else "tracks"
-        dest = out / folder / f"{prefix}_{cell}_{mark}.500bp.pt"
+        dest = out / "tracks" / f"{prefix}_{cell}_{mark}.500bp.pt"
         jobs.append({"cell": cell, "mark": mark, "src": str(src), "dest": str(dest),
                      "kind": "peaks" if peaks else "bigwig",
                      "assembly": record.get("assembly", "hg19"),
@@ -202,8 +203,10 @@ def plan_jobs(resolved: Dict, cells: List[str], groups: List[str],
     return jobs
 
 
-def write_feature_config(out: Path, marks: List[str]) -> Dict[str, List[str]]:
-    """List every cell in <out>/tracks whose eight files exist."""
+def write_feature_config(out: Path, marks: List[str],
+                         existing: Set[str]) -> Dict[str, List[str]]:
+    """List every cell in <out>/tracks whose eight files exist, in
+    features.json, and those not in `existing` in features_new_cells.json."""
     tracks = out / "tracks"
     config, incomplete = {}, {}
     files = {p.name for p in tracks.glob("*.500bp.pt")} if tracks.exists() else set()
@@ -219,9 +222,13 @@ def write_feature_config(out: Path, marks: List[str]) -> Dict[str, List[str]]:
             config[cell] = entry
         else:
             incomplete[cell] = [m for m in marks if m not in entry]
-    payload = {"_location": "./processed"}
-    payload.update(config)
-    (out / "features_new_cells.json").write_text(json.dumps(payload, indent=2))
+    # features.json sits next to tracks/; features_new_cells.json goes next to
+    # the training PC's processed/ folder, where the new files are copied.
+    every = {"_location": "./tracks", **config}
+    (out / "features.json").write_text(json.dumps(every, indent=2))
+    new = {"_location": "./processed",
+           **{c: v for c, v in config.items() if c not in existing}}
+    (out / "features_new_cells.json").write_text(json.dumps(new, indent=2))
     return incomplete
 
 
@@ -274,12 +281,15 @@ def main():
                       f"median {s['median']:.2f}  p99 {s['p99']:.2f}  "
                       f"nonzero {s['nonzero']:.2f}", flush=True)
 
-    incomplete = write_feature_config(out, load_manifest()["marks"])
+    manifest = load_manifest()
+    existing = {c for c, info in manifest["cells"].items() if info.get("existing")}
+    incomplete = write_feature_config(out, manifest["marks"], existing)
     if incomplete:
         print("  cells still missing tracks:")
         for cell, marks in incomplete.items():
             print(f"   - {cell}: {', '.join(marks)}")
-    print(f"  feature list: {out / 'features_new_cells.json'}")
+    print(f"  feature lists: {out / 'features.json'} (every cell), "
+          f"{out / 'features_new_cells.json'} (new cells)")
     sys.exit(1 if failed else 0)
 
 

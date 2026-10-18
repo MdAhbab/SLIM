@@ -12,7 +12,7 @@ file present in both folders it reports, over chromosomes 1-22 and X:
   max_abs    largest absolute difference
 
 Usage:
-    python scripts/data/compare_tracks.py --ours datasets/processed/check \\
+    python scripts/data/compare_tracks.py --ours datasets/processed/tracks \\
         --reference datasets/raw/reference/transepi/data/genomic_data --cell HMEC
 """
 

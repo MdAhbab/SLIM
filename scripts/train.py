@@ -30,11 +30,20 @@ BENGI assays for training and validation, `data.dedup` merges repeated pairs,
 and `data.encoder_fit: crossfit` keeps the supervised sequence encoder from
 seeing the labels of the examples it encodes. `--protocol` applies the
 training assays and inputs chosen by the pilot runs (scripts/choose_protocol.py).
+
+The extended protocol is switched on by `training.valid_cells`: validation is
+whole held-out cell lines rather than held-out chromosomes, the benchmark
+files may come from several folders (`paths.bengi_dirs`),
+`data.exclude_eval_pairs` removes training rows that repeat a validation or
+test pair, and `training.samples_per_epoch` draws a fresh, cell-balanced
+sample each epoch. Every switch is off by default, so the configurations of
+the earlier runs train exactly as before.
 """
 
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import math
 import os
@@ -43,6 +52,7 @@ import random
 import sys
 import time
 from pathlib import Path
+from typing import List
 
 import numpy as np
 import torch
@@ -55,12 +65,13 @@ from torch.utils.data import DataLoader, Subset
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.bengi import bengi_files, fraction_of_rows, read_rows, select_rows_for_config
+from src.bengi import (PairTable, bengi_files, fraction_of_rows, read_rows,
+                       select_rows_for_config)
 from src.config import load_config
 from src.shutdown import run_main
-from src.dataset import EPIDataset
+from src.dataset import CellBalancedSampler, EPIDataset
 from src.encoding import CrossFitEncoder, POCD_ND_Encoder, chromosome_half
-from src.epi_data_pipeline import EPIGenomicDataset
+from src.epi_data_pipeline import EPIGenomicDataset, dataset_options
 from src.slim_model import build_model
 from src.metrics import compute_all_metrics, format_epoch_line, format_metrics_report
 
@@ -371,6 +382,64 @@ def build_splits(train_genomic, args, config):
     return train_idx, val_idx, sorted(held)
 
 
+def training_cells(config, args, folders) -> List[str]:
+    """Cell lines that may be trained on. data.train_cells "all" takes every
+    cell with a benchmark file in the folders except the test cells, the
+    validation cells and those in data.never_train."""
+    named = config["data"].get("train_cells")
+    if named is None:
+        return list(args.train_cells)
+    if named != "all":
+        return list(named)
+    found = {os.path.basename(f).split(".")[0] for folder in folders
+             for f in glob.glob(os.path.join(folder, "*.tsv*"))}
+    banned = (set(args.test_cells) | set(config["training"].get("valid_cells") or [])
+              | set(config["data"].get("never_train") or []))
+    return sorted(found - banned)
+
+
+def extended_rows(config, files):
+    """Rows for validation on whole held-out cell lines (training.valid_cells).
+
+    Validation is every row of the validation cells, of the assays in
+    training.valid_assays; training is every row of the other cells, of the
+    assays in data.train_assays. With data.exclude_eval_pairs, a training row
+    whose enhancer and gene form a validation pair, or a pair in the files of
+    paths.exclusion_files (the test sets), is removed, so validation and test
+    relate to training in the same way. Returns the table, the training and
+    validation positions and a report.
+    """
+    data, train_cfg = config["data"], config["training"]
+    valid_cells = set(train_cfg["valid_cells"])
+    train_assays = data.get("train_assays") or None
+    valid_assays = train_cfg.get("valid_assays") or None
+
+    def keep(row):
+        wanted = valid_assays if row["cell"] in valid_cells else train_assays
+        return wanted is None or row["assay"] in wanted
+
+    table = PairTable.from_files(files, keep)
+    table, report = table.deduplicate(data.get("dedup", "none"))
+    is_valid = np.isin(table.strings("cell"), sorted(valid_cells))
+    removed = 0
+    if data.get("exclude_eval_pairs", False):
+        pairs = table.pairs(np.flatnonzero(is_valid))
+        patterns = config["paths"].get("exclusion_files") or []
+        listed = sorted({f for pattern in patterns for f in glob.glob(pattern)})
+        if patterns and not listed:
+            raise FileNotFoundError(f"paths.exclusion_files matched no file: {patterns}")
+        for path in listed:
+            pairs |= {(r["enh_id"], r["gene"]) for r in read_rows([path])}
+        drop = ~is_valid & table.pair_mask(pairs)
+        removed = int(drop.sum())
+        table, is_valid = table.take(~drop), is_valid[~drop]
+        report["exclusion_files"] = listed
+    report["rows_removed_as_eval_pairs"] = removed
+    report["rows_out"] = len(table)
+    return (table, np.flatnonzero(~is_valid).tolist(),
+            np.flatnonzero(is_valid).tolist(), report)
+
+
 def save_predictions(save_dir, test_metrics, val_metrics, test_genomic,
                      per_cell, extra):
     """Save every per-example prediction the downstream analyses need.
@@ -473,48 +542,72 @@ def main():
         return
 
     paths = config["paths"]
-    bengi_dir = paths.get("bengi_dir", "./data/BENGI")
-    feats_config = paths.get("feats_config", "")
-    ref_genome = paths.get("ref_genome", "") or None
+    # One folder (bengi_dir) or several (bengi_dirs, searched in order).
+    folders = paths.get("bengi_dirs") or [paths.get("bengi_dir", "./data/BENGI")]
+    test_folders = paths.get("test_dirs") or folders
+    valid_cells = config["training"].get("valid_cells") or []
+    args.train_cells = training_cells(config, args, folders)
+    overlap = set(args.train_cells) & (set(args.test_cells) | set(valid_cells))
+    if overlap:
+        raise SystemExit(f"cells both trained on and held out: {sorted(overlap)}")
 
-    train_files = bengi_files(bengi_dir, args.train_cells)
-    test_files = bengi_files(bengi_dir, args.test_cells)
+    train_files = bengi_files(folders, list(args.train_cells) + list(valid_cells))
+    test_files = bengi_files(test_folders, args.test_cells)
     if not train_files:
         raise FileNotFoundError(
-            f"no BENGI files for training cells {args.train_cells} in {bengi_dir}")
+            f"no BENGI files for training cells {args.train_cells} in {folders}")
     if not test_files:
         raise FileNotFoundError(
-            f"no BENGI files for test cells {args.test_cells} in {bengi_dir}")
+            f"no BENGI files for test cells {args.test_cells} in {test_folders}")
 
-    ds_kwargs = dict(
-        feats_config_path=feats_config,
-        feats_order=config["data"].get("feats_order"),
-        seq_len=config["data"].get("seq_len_bp", 2_500_000),
-        bin_size=config["data"].get("bin_size", 500),
-        enhancer_window=config["data"].get("enhancer_window", 3000),
-        promoter_window=config["data"].get("promoter_window", 3000),
-        ref_genome_path=ref_genome,
-    )
+    if config["data"].get("track_norm", "none") == "cell_quantile":
+        # The reference distribution is that of the training cells. It is
+        # written into the configuration, so evaluation maps tracks the same way.
+        config["data"].setdefault("quantile_reference_cells", sorted(args.train_cells))
+    ds_kwargs = dataset_options(config)
     print("\n=== Loading training data ===")
-    held = held_out_chroms(args, config)
-    train_rows, row_report = select_rows_for_config(
-        read_rows(train_files), held, config)
-    print(f"  Training assays {config['data'].get('train_assays') or 'all'}, "
-          f"validation assays {config['training'].get('valid_assays') or 'all'}, "
-          f"dedup {config['data'].get('dedup', 'none')}: "
-          f"{row_report['rows_in']:,} rows kept, "
-          f"{row_report['duplicate_rows']:,} repeat a pair "
-          f"({row_report['pairs_with_conflicting_labels']:,} pairs with "
-          f"conflicting labels), {row_report['rows_out']:,} rows used.")
-    train_genomic = EPIGenomicDataset(bengi_paths=None, rows=train_rows,
-                                      **ds_kwargs)
+    if valid_cells:
+        table, train_idx, val_idx, row_report = extended_rows(config, train_files)
+        held = sorted(valid_cells)
+        print(f"  {len(train_files)} files from {folders}")
+        print(f"  Training assays {config['data'].get('train_assays') or 'all'}, "
+              f"validation cells {held} (assays "
+              f"{config['training'].get('valid_assays') or 'all'}), dedup "
+              f"{config['data'].get('dedup', 'none')}: {row_report['rows_in']:,} rows "
+              f"read, {row_report['duplicate_rows']:,} repeats merged, "
+              f"{row_report['rows_removed_as_eval_pairs']:,} training rows removed "
+              f"as validation or test pairs, {row_report['rows_out']:,} rows used.")
+        train_genomic = EPIGenomicDataset(bengi_paths=None, table=table, **ds_kwargs)
+    else:
+        held = held_out_chroms(args, config)
+        train_rows, row_report = select_rows_for_config(
+            read_rows(train_files), held, config)
+        print(f"  Training assays {config['data'].get('train_assays') or 'all'}, "
+              f"validation assays {config['training'].get('valid_assays') or 'all'}, "
+              f"dedup {config['data'].get('dedup', 'none')}: "
+              f"{row_report['rows_in']:,} rows kept, "
+              f"{row_report['duplicate_rows']:,} repeat a pair "
+              f"({row_report['pairs_with_conflicting_labels']:,} pairs with "
+              f"conflicting labels), {row_report['rows_out']:,} rows used.")
+        train_genomic = EPIGenomicDataset(bengi_paths=None, rows=train_rows,
+                                          **ds_kwargs)
     print("\n=== Loading test data ===")
     # The test set is the benchmark as published: every row, in file order.
     test_genomic = EPIGenomicDataset(bengi_paths=test_files, **ds_kwargs)
 
-    train_idx, val_idx, held = build_splits(train_genomic, args, config)
-    print(f"\nHeld-out chromosomes for validation: {held}")
+    if valid_cells:
+        print(f"\nValidation on held-out cells: {held}")
+    else:
+        train_idx, val_idx, held = build_splits(train_genomic, args, config)
+        print(f"\nHeld-out chromosomes for validation: {held}")
     labels_all = train_genomic.get_labels()
+    n_valid = config["training"].get("valid_samples", 0)
+    if n_valid and len(val_idx) > n_valid:
+        # A fixed, class-stratified sample, the same for every run and seed,
+        # so validation scores are comparable across runs.
+        full = len(val_idx)
+        val_idx = fraction_of_rows(val_idx, labels_all, n_valid / full, seed=0)
+        print(f"Validation sample: {len(val_idx):,} of {full:,} rows")
     fraction = config["data"].get("train_fraction", 1.0)
     if fraction < 1.0:
         # Learning curve over training-set size. The subset is fixed before
@@ -556,9 +649,20 @@ def main():
 
     eval_kwargs = dict(loader_kwargs)
     eval_kwargs["num_workers"] = min(4, num_workers)
-    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True,
-                              drop_last=True, generator=generator,
-                              **loader_kwargs)
+    per_epoch = config["training"].get("samples_per_epoch", 0)
+    sampler = None
+    if per_epoch:
+        cells_all = train_genomic.get_cells()
+        sampler = CellBalancedSampler(cells_all[np.asarray(train_idx)], per_epoch,
+                                      seed=args.seed)
+        print(f"Each epoch: {len(sampler):,} rows drawn from "
+              f"{len(sampler.groups)} training cells")
+        train_loader = DataLoader(train_set, batch_size=batch_size, sampler=sampler,
+                                  drop_last=True, **loader_kwargs)
+    else:
+        train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True,
+                                  drop_last=True, generator=generator,
+                                  **loader_kwargs)
     val_loader = DataLoader(val_set, batch_size=batch_size, **eval_kwargs)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, **eval_kwargs)
 
@@ -645,8 +749,14 @@ def main():
           "here.\n")
 
     stopped_early = False
+    log_test = config["training"].get("log_test_each_epoch", False)
+    if log_test:
+        print("Test metrics are logged every epoch as a diagnostic of the "
+              "validation protocol; they play no part in selection.")
     for epoch in range(start_epoch, epochs + 1):
         started = time.time()
+        if sampler is not None:
+            sampler.set_epoch(epoch)
         model.train()
         train_dataset.augment = use_augment
         epoch_preds, epoch_labels = [], []
@@ -705,6 +815,11 @@ def main():
         scored_sets = [("train", train_metrics), ("val", val_metrics)]
         if clean_metrics is not None:
             scored_sets.append(("train_clean", clean_metrics))
+        if log_test:
+            epoch_test = evaluate_loader(scored(), test_loader, device, config, use_amp)
+            scored_sets.append(("test", epoch_test))
+            print(f"  test (diagnostic only): AUROC {epoch_test.get('auroc') or 0:.4f}, "
+                  f"AUPR {epoch_test.get('aupr') or 0:.4f}")
         for prefix, m in scored_sets:
             for key in ("loss", "auroc", "aupr", "accuracy",
                         "balanced_accuracy", "precision", "recall", "f1", "mcc"):
@@ -771,13 +886,13 @@ def main():
     val_metrics = evaluate_loader(model, val_loader, device, config, use_amp)
     test_metrics = evaluate_loader(model, test_loader, device, config, use_amp)
 
-    print(f"\n[Validation] {len(val_metrics['labels'])} pairs, chroms {held}")
+    print(f"\n[Validation] {len(val_metrics['labels'])} pairs, held out {held}")
     print(format_metrics_report(val_metrics, indent=2))
     print(f"\n[Test] {len(test_metrics['labels'])} pairs from "
           f"{args.test_cells}, threshold 0.5")
     print(format_metrics_report(test_metrics, indent=2))
 
-    cells = np.array([s["cell"] for s in test_genomic.samples])
+    cells = test_genomic.get_cells()
     per_cell = {}
     for cell in sorted(set(cells.tolist())):
         sel = cells == cell

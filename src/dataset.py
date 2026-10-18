@@ -7,7 +7,7 @@ Can be used in two modes:
 """
 
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 import numpy as np
 # ---- Augmentation helpers ----
 _COMP = str.maketrans('ACGTNacgtn', 'TGCANtgcan')
@@ -16,27 +16,82 @@ def _reverse_complement(seq: str) -> str:
     """Return reverse complement of a DNA string."""
     return seq.translate(_COMP)[::-1]
 
-def shift_tracks(epi: torch.Tensor, shift: int, mode: str = "tracks") -> torch.Tensor:
+def shift_tracks(epi: torch.Tensor, shift: int, mode: str = "tracks",
+                 n_tracks: int | None = None) -> torch.Tensor:
     """Shift chromatin bins by `shift` positions.
 
-    mode "tracks" moves channels 1 onward and fills the vacated bins with
-    zeros, leaving channel 0 (the position channel, aligned with the anchor
-    indices) where it is. mode "all" is the original circular roll of every
-    channel.
+    mode "tracks" moves channels 1 onward (channels 1 to n_tracks when the
+    presence channels follow them) and fills the vacated bins with zeros,
+    leaving channel 0 (the position channel, aligned with the anchor indices)
+    where it is. mode "all" is the original circular roll of every channel.
     """
     if shift == 0:
         return epi
     if mode == "all":
         return torch.roll(epi, shifts=shift, dims=1)
+    last = epi.shape[0] if n_tracks is None else 1 + n_tracks
     out = epi.clone()
-    tracks = epi[1:]
+    tracks = epi[1:last]
     moved = torch.zeros_like(tracks)
     if shift > 0:
         moved[:, shift:] = tracks[:, :-shift]
     else:
         moved[:, :shift] = tracks[:, -shift:]
-    out[1:] = moved
+    out[1:last] = moved
     return out
+
+
+class CellBalancedSampler(Sampler):
+    """A fresh sample of the training rows every epoch, shared fairly between
+    cell lines.
+
+    Each epoch draws `num_samples` rows without replacement. Every cell gets
+    the same share, and a cell with fewer rows than its share gives all of
+    them, its unused share going to the others. So the largest cells cannot
+    dominate, and every row of a small cell is seen every epoch. Within a cell
+    rows are drawn uniformly, which keeps its natural positive rate. Call
+    `set_epoch` before each epoch; the draw depends only on the seed and the
+    epoch, so a resumed run sees the same rows.
+    """
+
+    def __init__(self, cells, num_samples: int, seed: int = 0):
+        cells = np.asarray(cells)
+        self.groups = [np.flatnonzero(cells == c) for c in np.unique(cells)]
+        sizes = np.array([len(g) for g in self.groups])
+        self.num_samples = int(min(num_samples, sizes.sum()))
+        self.quota = self.shares(sizes, self.num_samples)
+        self.seed = seed
+        self.epoch = 0
+
+    @staticmethod
+    def shares(sizes: np.ndarray, total: int) -> np.ndarray:
+        """Equal shares of `total`, capped at each size, the rest spread."""
+        quota = np.zeros(len(sizes), dtype=np.int64)
+        left, open_ = total, np.ones(len(sizes), dtype=bool)
+        while left > 0 and open_.any():
+            share = max(1, left // int(open_.sum()))
+            for i in np.flatnonzero(open_):
+                take = min(share, sizes[i] - quota[i], left)
+                quota[i] += take
+                left -= take
+                if quota[i] >= sizes[i]:
+                    open_[i] = False
+                if left == 0:
+                    break
+        return quota
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    def __iter__(self):
+        rng = np.random.default_rng([self.seed, self.epoch])
+        picked = [rng.choice(g, size=q, replace=False)
+                  for g, q in zip(self.groups, self.quota) if q]
+        order = np.concatenate(picked) if picked else np.zeros(0, dtype=np.int64)
+        return iter(rng.permutation(order).tolist())
+
+    def __len__(self) -> int:
+        return self.num_samples
 
 
 class EPIDataset(Dataset):
@@ -103,6 +158,22 @@ class EPIDataset(Dataset):
         #       indices no longer match the position channel.
         self.aug_rc_mode = aug_cfg.get("rc_mode", "concat")
         self.aug_shift_mode = aug_cfg.get("shift_mode", "all")
+        # With data.presence_channels, the last n_tracks channels say which
+        # tracks the cell has. Mark dropout hides whole tracks during training
+        # (zeroes the track and its presence channel), so the model learns to
+        # predict when a mark is missing, as it is for some cells.
+        self.presence = config["data"].get("presence_channels", False)
+        self.n_tracks = len(config["data"].get("feats_order") or [])
+        self.aug_mark_dropout = aug_cfg.get("mark_dropout", 0.0)
+        if self.aug_mark_dropout and not self.presence:
+            raise ValueError("augmentation.mark_dropout needs data.presence_channels")
+        expected = 1 + self.n_tracks * (2 if self.presence else 1)
+        if self.n_tracks and self.n_epi != expected:
+            raise ValueError(
+                f"data.n_epigenetic_features is {self.n_epi} but the position "
+                f"channel, {self.n_tracks} tracks"
+                f"{' and their presence channels' if self.presence else ''} "
+                f"make {expected}")
         if self.aug_rc_mode not in {"segment", "concat"}:
             raise ValueError("augmentation.rc_mode must be segment or concat")
         if self.aug_shift_mode not in {"tracks", "all"}:
@@ -222,16 +293,26 @@ class EPIDataset(Dataset):
             if flip and self.aug_rc_mode == "concat":
                 dna = _reverse_complement(dna)
 
-            # 2. Small Gaussian noise on epigenetic features
+            # 2. Small Gaussian noise on epigenetic features (not on the
+            #    presence channels, which are exact)
             if self.aug_epi_noise_std > 0:
-                epi = epi + torch.randn_like(epi) * self.aug_epi_noise_std
-                epi = epi.clamp(min=0)  # epigenetic signals are non-negative
+                last = 1 + self.n_tracks if self.presence else epi.shape[0]
+                noisy = epi[:last] + torch.randn_like(epi[:last]) * self.aug_epi_noise_std
+                epi[:last] = noisy.clamp(min=0)  # signals are non-negative
 
             # 3. Random shift of epigenetic bins (simulates coord jitter)
             if self.aug_shift_max > 0:
                 shift = np.random.randint(-self.aug_shift_max, self.aug_shift_max + 1)
                 if shift != 0:
-                    epi = shift_tracks(epi, shift, self.aug_shift_mode)
+                    epi = shift_tracks(epi, shift, self.aug_shift_mode,
+                                       self.n_tracks if self.presence else None)
+
+            # 4. Mark dropout: hide whole tracks, as for a cell that lacks them
+            if self.aug_mark_dropout > 0:
+                for j in np.flatnonzero(np.random.random(self.n_tracks)
+                                        < self.aug_mark_dropout):
+                    epi[1 + j] = 0.0
+                    epi[1 + self.n_tracks + j] = 0.0
 
         if self.skip_sequence:
             seq_enc = torch.zeros(4 ** self.encoder.k, len(dna) - self.encoder.k + 1)

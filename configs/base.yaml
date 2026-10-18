@@ -10,6 +10,14 @@ paths:
   bengi_dir: "D:/E/AI Models/FYDP-Model/data/BENGI"
   feats_config: "D:/E/AI Models/FYDP-Model/data/genomic_data/CTCF_DNase_6histone_local.500.json"
   ref_genome: "D:/E/AI Models/FYDP-Model/data/hg19.fa"
+  # Extended protocol only (see training.valid_cells). Unset, the paths above
+  # are used alone.
+  # bengi_dirs: [...]        benchmark folders searched in order, instead of
+  #                          bengi_dir; test files then come from test_dirs
+  # test_dirs: [...]
+  # exclusion_files: [...]   test files (globs) whose pairs are removed from
+  #                          training under data.exclude_eval_pairs
+  # track_quantiles: "..."   written by scripts/data/track_quantiles.py
 
 data:
   sequence_length: 6000      # 3000 bp enhancer plus 3000 bp promoter
@@ -44,6 +52,16 @@ data:
   dedup: "union"             # none | union. union merges rows that repeat one
                              # (cell, enhancer, transcript start) pair across
                              # assay files, labelled positive if any file is.
+  # Extended protocol switches, all off here:
+  train_cells: null          # null: --train-cells; "all": every cell in the
+                             # folders except the test, validation and
+                             # never_train cells; or a list
+  never_train: []            # cells that may never be trained on
+  exclude_eval_pairs: false  # drop training rows that repeat a validation or
+                             # test pair (same enhancer and gene)
+  presence_channels: false   # one channel per track, 1 where the cell has it;
+                             # n_epigenetic_features is then 17
+  track_norm: "none"         # none | cell_quantile (needs paths.track_quantiles)
   feats_order:
     - "CTCF"
     - "DNase"
@@ -100,6 +118,13 @@ training:
     - "chr17"
   valid_assays:              # validation scored on the test assay only, so
     - "HiC"                  # checkpoint selection rewards what the test asks
+  # Extended protocol switches, all off here:
+  valid_cells: []            # whole cell lines held out for validation,
+                             # instead of valid_chroms
+  valid_samples: 0           # a fixed, stratified validation sample (0: all)
+  samples_per_epoch: 0       # rows drawn per epoch, shared between training
+                             # cells (0: every row, shuffled)
+  log_test_each_epoch: false # diagnostic only; never used for selection
 
 augmentation:
   enabled: true
@@ -107,5 +132,7 @@ augmentation:
   rc_mode: "segment"         # each sequence in place, enhancer kept first
   epi_noise_std: 0.05        # Gaussian noise on chromatin channels
   shift_max_bins: 3          # random bin shift
+  mark_dropout: 0.0          # hide each whole track with this probability;
+                             # needs data.presence_channels
   shift_mode: "tracks"       # chromatin tracks only, zero-filled; the position
                              # channel stays aligned with the anchors

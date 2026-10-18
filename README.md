@@ -236,7 +236,7 @@ Check the installation without any data:
 
 ```bash
 python run.py --check              # packages, GPU, disk, data files
-python -m pytest -q                # 82 tests, about a minute
+python -m pytest -q                # 91 tests, about a minute
 python -m pytest -q -m slow        # end to end on synthetic data, about 45 seconds
 ```
 
@@ -326,6 +326,7 @@ python scripts/data/compare_tracks.py --ours datasets/processed/check     --refe
 python scripts/data/build_pairs.py --all             # BENGI-style pairs from loops
 python scripts/data/audit_new_data.py                # test-cell and repeat rules
 python scripts/data/convert_eval.py all              # CRISPR, ABC, eQTL, TargetFinder, CBOEP2
+python scripts/data/track_quantiles.py --features datasets/processed/features.json \n    --out datasets/processed/track_quantiles.json  # for data.track_norm cell_quantile
 ```
 
 `--stage` copies each input to a local folder before reading it. Under WSL,

@@ -24,8 +24,11 @@ from __future__ import annotations
 import glob
 import gzip
 import os
+from array import array
 from collections import OrderedDict
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+
+import numpy as np
 
 
 def open_text(path: str):
@@ -33,16 +36,33 @@ def open_text(path: str):
     return gzip.open(path, "rt") if path.endswith(".gz") else open(path, "rt")
 
 
-def bengi_files(bengi_dir: str, cells: Sequence[str]) -> List[str]:
-    """Benchmark files for the named cell lines, in a fixed sorted order."""
-    found = sorted(glob.glob(os.path.join(bengi_dir, "*.tsv*")))
+def bengi_files(bengi_dir: str | Sequence[str], cells: Sequence[str]) -> List[str]:
+    """Benchmark files for the named cell lines: folder by folder in the order
+    given, sorted within each folder."""
+    folders = [bengi_dir] if isinstance(bengi_dir, str) else list(bengi_dir)
+    found = [f for folder in folders
+             for f in sorted(glob.glob(os.path.join(folder, "*.tsv*")))]
     return [f for f in found if os.path.basename(f).split(".")[0] in cells]
 
 
-def assay_of(path: str) -> str:
-    """Assay named in a BENGI file name, e.g. 'HiC' or 'CTCF-ChIAPET'."""
+def split_assay(path: str) -> Tuple[str, str]:
+    """Assay and label source named in a benchmark file name.
+
+    BENGI's files name the assay only ("GM12878.HiC-Benchmark.v3.tsv.gz").
+    Files built by scripts/data/build_pairs.py may add the source after an
+    underscore ("GM12878.HiC_encode-Benchmark...", "H1.PCHiC_jung2019-...").
+    Returns ("HiC", "encode") for the second and ("HiC", "") for the first.
+    """
     parts = os.path.basename(path).split(".")
-    return parts[1].replace("-Benchmark", "") if len(parts) > 1 else "unknown"
+    if len(parts) < 2:
+        return "unknown", ""
+    assay, _, source = parts[1].replace("-Benchmark", "").partition("_")
+    return assay, source
+
+
+def assay_of(path: str) -> str:
+    """Assay named in a benchmark file name, e.g. 'HiC' or 'CTCF-ChIAPET'."""
+    return split_assay(path)[0]
 
 
 def parse_line(line: str, assay: str = "unknown") -> Dict | None:
@@ -181,7 +201,6 @@ def fraction_of_rows(indices: Sequence[int], labels: Sequence[int],
     indices = list(indices)
     if fraction == 1:
         return indices
-    import numpy as np
     rng = np.random.default_rng(seed)
     keep: List[int] = []
     for cls in (0, 1):
@@ -190,3 +209,185 @@ def fraction_of_rows(indices: Sequence[int], labels: Sequence[int],
         n = max(1, int(round(fraction * len(pool))))
         keep += [pool[j] for j in order[:n]]
     return sorted(keep)
+
+
+# ---------------------------------------------------------------------------
+# Large row sets
+# ---------------------------------------------------------------------------
+class PairTable:
+    """Benchmark rows as NumPy columns, for row sets too large for one dict
+    per row.
+
+    The extended training data has millions of rows. As dicts (read_rows) they
+    take several gigabytes, and under Windows every DataLoader worker receives
+    its own copy. Here a row costs about 40 bytes. Rows are parsed by
+    `parse_line` in file order, as `read_rows` parses them, so both read the
+    same rows.
+
+    Columns: label (int8), dist (float32), enh_start, enh_end, tss_coord
+    (int32), and int32 codes for chrom, cell, assay, source, enh (the enhancer
+    ID) and gene, each an index into the list of the same name in `vocab`.
+    """
+
+    NUMERIC = (("label", "b"), ("dist", "f"), ("enh_start", "i"),
+               ("enh_end", "i"), ("tss_coord", "i"))
+    CODED = ("chrom", "cell", "assay", "source", "enh", "gene")
+
+    def __init__(self, columns: Dict[str, np.ndarray], vocab: Dict[str, List[str]]):
+        self.columns = columns
+        self.vocab = vocab
+
+    # -- building ------------------------------------------------------------
+    @classmethod
+    def from_rows(cls, rows: Iterable[Dict]) -> "PairTable":
+        """From rows parsed by `parse_line` (or `read_rows`)."""
+        builder = _TableBuilder()
+        for row in rows:
+            builder.add(row)
+        return builder.build()
+
+    @classmethod
+    def from_files(cls, paths: Iterable[str],
+                   keep: Optional[Callable[[Dict], bool]] = None) -> "PairTable":
+        """Every row of the files, file by file, that `keep` accepts. Each row
+        passed to `keep` carries its "assay" and "source" (see split_assay)."""
+        builder = _TableBuilder()
+        for path in paths:
+            assay, source = split_assay(path)
+            with open_text(path) as handle:
+                for line in handle:
+                    row = parse_line(line, assay)
+                    if row is None:
+                        continue
+                    row["source"] = source
+                    if keep is None or keep(row):
+                        builder.add(row)
+        return builder.build()
+
+    # -- access --------------------------------------------------------------
+    def __len__(self) -> int:
+        return len(self.columns["label"])
+
+    def strings(self, name: str) -> np.ndarray:
+        """A coded column as strings."""
+        return np.asarray(self.vocab[name], dtype=object)[self.columns[name]]
+
+    def row(self, i: int) -> Dict:
+        """Row i in the form `parse_line` returns."""
+        c, v = self.columns, self.vocab
+        start, end = int(c["enh_start"][i]), int(c["enh_end"][i])
+        return {"label": int(c["label"][i]), "dist": float(c["dist"][i]),
+                "chrom": v["chrom"][c["chrom"][i]], "enh_start": start,
+                "enh_end": end, "enh_coord": (start + end) // 2,
+                "tss_coord": int(c["tss_coord"][i]), "cell": v["cell"][c["cell"][i]],
+                "enh_id": v["enh"][c["enh"][i]], "gene": v["gene"][c["gene"][i]],
+                "assay": v["assay"][c["assay"][i]],
+                "source": v["source"][c["source"][i]]}
+
+    def take(self, index) -> "PairTable":
+        """The rows at `index` (an index array or a boolean mask)."""
+        return PairTable({k: col[index] for k, col in self.columns.items()}, self.vocab)
+
+    def pair_keys(self) -> np.ndarray:
+        """One int64 per row naming its (enhancer ID, gene) inside this table."""
+        return (self.columns["enh"].astype(np.int64) * len(self.vocab["gene"])
+                + self.columns["gene"])
+
+    def pairs(self, index=None) -> Set[Tuple[str, str]]:
+        """The (enhancer ID, gene) pairs of the rows at `index` (all rows)."""
+        keys = self.pair_keys() if index is None else self.pair_keys()[index]
+        n = len(self.vocab["gene"])
+        enh, gene = self.vocab["enh"], self.vocab["gene"]
+        return {(enh[k // n], gene[k % n]) for k in np.unique(keys).tolist()}
+
+    def pair_mask(self, pairs: Iterable[Tuple[str, str]]) -> np.ndarray:
+        """True for each row whose (enhancer ID, gene) is in `pairs`."""
+        enh = {e: i for i, e in enumerate(self.vocab["enh"])}
+        gene = {g: i for i, g in enumerate(self.vocab["gene"])}
+        n = len(self.vocab["gene"])
+        wanted = np.array([enh[e] * n + gene[g] for e, g in pairs
+                           if e in enh and g in gene], dtype=np.int64)
+        return np.isin(self.pair_keys(), wanted)
+
+    # -- merging repeats -----------------------------------------------------
+    def deduplicate(self, mode: str = "none") -> Tuple["PairTable", Dict[str, int]]:
+        """`deduplicate` for a table: the same rule, report and row order."""
+        if mode not in {"none", "union"}:
+            raise ValueError("dedup must be one of: none, union")
+        c = self.columns
+        n = len(self)
+        enh_coord = (c["enh_start"].astype(np.int64) + c["enh_end"]) // 2
+        order = np.lexsort((c["tss_coord"], enh_coord, c["chrom"], c["cell"]))
+        key = np.stack([c["cell"][order], c["chrom"][order],
+                        enh_coord[order], c["tss_coord"][order]], axis=1)
+        new_group = np.ones(n, dtype=bool)
+        if n:
+            new_group[1:] = (key[1:] != key[:-1]).any(axis=1)
+        starts = np.flatnonzero(new_group)
+        sizes = np.diff(np.append(starts, n))
+        labels = c["label"][order]
+        high = np.maximum.reduceat(labels, starts) if n else labels
+        low = np.minimum.reduceat(labels, starts) if n else labels
+        repeated = sizes > 1
+        report = {"rows_in": n, "unique_pairs": len(starts),
+                  "duplicate_rows": n - len(starts),
+                  "pairs_repeated": int(repeated.sum()),
+                  "pairs_with_conflicting_labels": int((repeated & (high != low)).sum())}
+        if mode == "none":
+            report["rows_out"] = n
+            return self, report
+        # lexsort is stable, so each group starts at its first occurrence.
+        first = order[starts]
+        assays = list(self.vocab["assay"])
+        if len(assays) > 62:
+            raise ValueError("more than 62 assay names; cannot merge their sets")
+        bits = np.left_shift(np.int64(1), c["assay"][order].astype(np.int64))
+        masks = np.bitwise_or.reduceat(bits, starts) if n else bits
+        joined: Dict[int, int] = {}
+        merged_assay = np.empty(len(starts), dtype=np.int32)
+        for i, mask in enumerate(masks.tolist()):
+            if mask not in joined:
+                name = "+".join(sorted(assays[b] for b in range(len(assays))
+                                       if mask >> b & 1))
+                if name not in assays:
+                    assays.append(name)
+                joined[mask] = assays.index(name)
+            merged_assay[i] = joined[mask]
+        position = np.argsort(first, kind="stable")
+        table = PairTable({k: col[first[position]] for k, col in c.items()},
+                          dict(self.vocab, assay=assays))
+        table.columns["label"] = high[position].astype(np.int8)
+        table.columns["assay"] = merged_assay[position]
+        report["rows_out"] = len(table)
+        return table, report
+
+
+class _TableBuilder:
+    """Collects rows into typed arrays and string codes."""
+
+    def __init__(self):
+        self.numeric = {name: array(code) for name, code in PairTable.NUMERIC}
+        self.coded = {name: array("i") for name in PairTable.CODED}
+        self.index = {name: {} for name in PairTable.CODED}
+
+    def add(self, row: Dict) -> None:
+        for name, _ in PairTable.NUMERIC:
+            self.numeric[name].append(row[name])
+        values = (("chrom", row["chrom"]), ("cell", row["cell"]),
+                  ("assay", row["assay"]), ("source", row.get("source", "")),
+                  ("enh", row["enh_id"]), ("gene", row["gene"]))
+        for name, value in values:
+            codes = self.index[name]
+            code = codes.get(value)
+            if code is None:
+                code = codes[value] = len(codes)
+            self.coded[name].append(code)
+
+    def build(self) -> PairTable:
+        types = {"b": np.int8, "f": np.float32, "i": np.int32}
+        columns = {name: np.array(self.numeric[name], dtype=types[code])
+                   for name, code in PairTable.NUMERIC}
+        columns.update({name: np.array(self.coded[name], dtype=np.int32)
+                        for name in PairTable.CODED})
+        vocab = {name: list(codes) for name, codes in self.index.items()}
+        return PairTable(columns, vocab)

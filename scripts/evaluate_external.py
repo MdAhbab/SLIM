@@ -45,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.config import resolve_track_location  # noqa: E402
 from src.dataset import EPIDataset  # noqa: E402
-from src.epi_data_pipeline import EPIGenomicDataset  # noqa: E402
+from src.epi_data_pipeline import EPIGenomicDataset, dataset_options  # noqa: E402
 from src.metrics import compute_all_metrics  # noqa: E402
 from src.slim_model import build_model  # noqa: E402
 
@@ -95,6 +95,9 @@ def main():
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--workers", type=int, default=0)
+    parser.add_argument("--track-quantiles", default=None,
+                        help="quantile file on this machine, for runs trained "
+                             "with data.track_norm cell_quantile")
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -116,29 +119,24 @@ def main():
             if dest.exists():
                 print(f"  {tag} on {name}: done before, skipped")
                 continue
-            data = config["data"]
-            genomic = EPIGenomicDataset(
-                bengi_paths=[str(test)], feats_config_path=feats,
-                feats_order=data.get("feats_order"),
-                seq_len=data.get("seq_len_bp", 2_500_000),
-                bin_size=data.get("bin_size", 500),
-                enhancer_window=data.get("enhancer_window", 3000),
-                promoter_window=data.get("promoter_window", 3000),
-                ref_genome_path=config["paths"].get("ref_genome") or None)
+            options = dataset_options(config)
+            options.update(feats_config_path=feats,
+                           ref_genome_path=config["paths"].get("ref_genome") or None)
+            if options["track_quantiles"] and args.track_quantiles:
+                options["track_quantiles"] = args.track_quantiles
+            genomic = EPIGenomicDataset(bengi_paths=[str(test)], **options)
             dataset = EPIDataset(config, encoder, source_dataset=genomic)
             loader = DataLoader(dataset, batch_size=args.batch_size,
                                 shuffle=False, num_workers=args.workers)
             metrics = evaluate_loader(model, loader, device, config, use_amp=False)
-            samples = genomic.samples
             dest.parent.mkdir(parents=True, exist_ok=True)
             np.savez(dest, predictions=metrics["predictions"], labels=metrics["labels"],
-                     cell=np.array([s["cell"] for s in samples]),
-                     chrom=np.array([s["chrom"] for s in samples]),
-                     enh_coord=np.array([s["enh_coord"] for s in samples]),
-                     prom_coord=np.array([s["prom_coord"] for s in samples]),
+                     cell=genomic.get_cells(), chrom=genomic.get_chrom_groups(),
+                     enh_coord=genomic.cols["enh_coord"],
+                     prom_coord=genomic.cols["prom_coord"],
                      variant=np.array(variant), run=np.array(str(run)))
             entry = {k: metrics.get(k) for k in ("auroc", "aupr", "f1", "mcc")}
-            entry.update(rows=len(samples), positives=int(metrics["labels"].sum()))
+            entry.update(rows=len(genomic), positives=int(metrics["labels"].sum()))
             summary.setdefault(name, {})[tag] = entry
             abc = Path(args.abc_dir) / test.name.replace(".tsv.gz", ".abc.npy")
             if abc.exists() and "ABC" not in summary[name]:

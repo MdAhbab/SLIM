@@ -7,6 +7,8 @@ Groups, smallest first:
   eval             CRISPR, ABC, eQTL, TargetFinder, CBOEP2, HCT116
   tracks-check     HMEC tracks, to check the processing against the
                    published HMEC track files
+  tracks-bengi     tracks of the other five BENGI cell lines, so that every
+                   cell shares one processing
   tracks-core      tracks of the new test, validation and training cells
   tracks-pretrain  tracks of the remaining epigenomes
 
@@ -32,7 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import download, load_resolved, raw_root  # noqa: E402
 
-ORDER = ["tools", "labels", "eval", "tracks-check", "tracks-core",
+ORDER = ["tools", "labels", "eval", "tracks-check", "tracks-bengi", "tracks-core",
          "tracks-pretrain"]
 
 

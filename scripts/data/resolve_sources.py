@@ -24,6 +24,8 @@ Usage:
     python scripts/data/resolve_sources.py --skip-sizes
     python scripts/data/resolve_sources.py --parts static github
                                   # refresh only these parts of resolved.json
+    python scripts/data/resolve_sources.py --parts roadmap encode --cells NHEK
+                                  # add or refresh one cell, keep the rest
 """
 
 from __future__ import annotations
@@ -223,14 +225,27 @@ def main():
     parser.add_argument("--parts", nargs="+", default=list(PARTS), choices=PARTS,
                         help="re-resolve only these parts and keep the rest of an "
                              "existing resolved.json")
+    parser.add_argument("--cells", nargs="+", default=None,
+                        help="re-resolve only these cells (their tracks, CTCF, "
+                             "cCREs and loops) and keep everything else in an "
+                             "existing resolved.json unchanged")
     args = parser.parse_args()
     parts = set(args.parts)
+    named = set(args.cells or [])
 
     manifest = load_manifest()
     files: List[Dict] = []
     choices: Dict[str, Dict] = {}
     missing: List[str] = []
-    if parts != set(PARTS) and RESOLVED.exists():
+    if named:
+        if not RESOLVED.exists():
+            sys.exit("--cells updates an existing resolved.json; run without it first")
+        previous = json.loads(RESOLVED.read_text())
+        files = [f for f in previous["files"]
+                 if not (PART_OF[f["kind"]] in parts and f.get("cell") in named)]
+        choices = {k: v for k, v in previous["choices"].items() if k not in named}
+        missing = [m for m in previous["missing"] if m.split(":")[0] not in named]
+    elif parts != set(PARTS) and RESOLVED.exists():
         previous = json.loads(RESOLVED.read_text())
         files = [f for f in previous["files"] if PART_OF[f["kind"]] not in parts]
         choices = previous["choices"] if "encode" not in parts else {}
@@ -239,13 +254,13 @@ def main():
     def add(**record):
         files.append(record)
 
-    for entry in manifest["static"] if "static" in parts else []:
+    for entry in manifest["static"] if "static" in parts and not named else []:
         add(id=entry["name"], group=entry["group"], kind="static",
             url=entry["url"], dest=entry["dest"])
 
     roadmap = manifest["roadmap"]
     for cell, info in manifest["cells"].items():
-        if not info.get("group") or "roadmap" not in parts:
+        if not info.get("group") or "roadmap" not in parts or (named and cell not in named):
             continue
         for mark in roadmap["marks"]:
             name = roadmap["pattern"].format(eid=info["eid"], mark=mark)
@@ -265,7 +280,8 @@ def main():
             entry["loops"] = choose_loops(cell, info, encode["loops"])
         return cell, info, entry
 
-    cells = list(manifest["cells"].items()) if "encode" in parts else []
+    cells = [(c, i) for c, i in manifest["cells"].items()
+             if "encode" in parts and (not named or c in named)]
     with ThreadPoolExecutor(4) as pool:
         looked_up = list(pool.map(lookup, cells))
     for cell, info, entry in looked_up:
@@ -300,8 +316,8 @@ def main():
               f"ccre={'yes' if entry.get('ccre') else '-'} "
               f"loops={len(entry.get('loops', []))}")
 
-    hct = hct116_tracks(encode["hct116"]) if "encode" in parts else []
-    if "encode" in parts:
+    hct = hct116_tracks(encode["hct116"]) if "encode" in parts and not named else []
+    if hct:
         print(f"  HCT116 tracks: {len([r for r in hct if not r.get('missing')])} files")
     for record in hct:
         if record.get("missing"):
@@ -317,13 +333,13 @@ def main():
         choices["HCT116"] = {"role": "test (optional)", "tracks": hct}
 
     eqtl = manifest["eqtl"]
-    for d in eqtl["datasets"] if "eqtl" in parts else []:
+    for d in eqtl["datasets"] if "eqtl" in parts and not named else []:
         name = f"{d['dataset']}.credible_sets.tsv.gz"
         add(id=f"eQTL {d['label']}", group="eval", kind="eqtl", label=d["label"],
             url=f"{eqtl['base_url']}{d['study']}/{d['dataset']}/{name}",
             dest=f"eval/eqtl/{name}")
 
-    for entry in manifest["github_folders"] if "github" in parts else []:
+    for entry in manifest["github_folders"] if "github" in parts and not named else []:
         for item in github_files(entry):
             add(id=f"{entry['name']}: {item['path']}", group=entry["group"],
                 kind="github", url=item["download_url"], size=item["size"],

@@ -53,19 +53,25 @@ roadmap:
 #   jung     sample code in Jung et al. 2019 promoter capture Hi-C
 #            (column `cell` of GSE86189_all_interaction.po.txt.gz)
 #   javierre cell-type columns in Javierre et al. 2016 promoter capture Hi-C
-#   existing tracks already processed on the training PC
+#   existing one of BENGI's six cell lines, which have their own benchmark
+#            files and track files on the training PC
 cells:
-  # The six BENGI cell lines. Only HMEC's tracks are downloaded, to check that
-  # the processing here reproduces the published HMEC track files of TransEPI
-  # (see `reference` below).
-  GM12878: {eid: E116, role: train, existing: true,
+  # The six BENGI cell lines. HMEC's tracks were converted first, to check
+  # that the processing here reproduces TransEPI's published HMEC files
+  # (see `reference` below). The other five are converted the same way so
+  # that every cell in the extended data shares one processing.
+  GM12878: {eid: E116, role: train, group: tracks-bengi, existing: true,
             encode: ["GM12878"], ctcf: ENCFF710VEH, jung: GM}
-  HeLa:    {eid: E117, role: train, existing: true, encode: ["HeLa-S3"], ctcf: ENCFF768OPK}
-  K562:    {eid: E123, role: train, existing: true, encode: ["K562"], ctcf: ENCFF738TKN}
-  IMR90:   {eid: E017, role: train, existing: true, encode: ["IMR-90"], ctcf: ENCFF453XKM, jung: IMR90}
+  HeLa:    {eid: E117, role: train, group: tracks-bengi, existing: true,
+            encode: ["HeLa-S3"], ctcf: ENCFF768OPK}
+  K562:    {eid: E123, role: train, group: tracks-bengi, existing: true,
+            encode: ["K562"], ctcf: ENCFF738TKN}
+  IMR90:   {eid: E017, role: train, group: tracks-bengi, existing: true,
+            encode: ["IMR-90"], ctcf: ENCFF453XKM, jung: IMR90}
   HMEC:    {eid: E119, role: test, group: tracks-check, existing: true,
             encode: ["mammary epithelial cell"], ctcf: ENCFF288RFS}
-  NHEK:    {eid: E127, role: test, existing: true, encode: ["keratinocyte"], ctcf: ENCFF226MQR}
+  NHEK:    {eid: E127, role: test, group: tracks-bengi, existing: true,
+            encode: ["keratinocyte"], ctcf: ENCFF226MQR}
 
   # A third unseen test line: Rao 2014 measured it with the BENGI assay.
   HUVEC:   {eid: E122, role: test, group: tracks-core,

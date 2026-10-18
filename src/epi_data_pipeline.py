@@ -34,7 +34,7 @@ from torch.utils.data import Dataset
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.config import resolve_track_location
-from src.bengi import read_rows
+from src.bengi import PairTable, read_rows
 
 # ---------------------------------------------------------------------------
 # hg19 chromosome sizes (for boundary checking)
@@ -98,6 +98,61 @@ def extract_sequence(ref_genome, chrom: str, center: int, window: int) -> str:
 # ===================================================================
 # Core data-loading class
 # ===================================================================
+def dataset_options(config: dict) -> dict:
+    """EPIGenomicDataset keyword arguments named by a configuration.
+
+    Training, evaluation and the analysis scripts all build their datasets
+    from this, so a run is always scored with the inputs it was trained on.
+    """
+    data, paths = config["data"], config.get("paths", {})
+    return dict(
+        feats_config_path=paths.get("feats_config", ""),
+        feats_order=data.get("feats_order"),
+        seq_len=data.get("seq_len_bp", 2_500_000),
+        bin_size=data.get("bin_size", 500),
+        enhancer_window=data.get("enhancer_window", 3000),
+        promoter_window=data.get("promoter_window", 3000),
+        ref_genome_path=paths.get("ref_genome") or None,
+        presence_channels=data.get("presence_channels", False),
+        track_quantiles=(paths.get("track_quantiles")
+                         if data.get("track_norm", "none") == "cell_quantile" else None),
+        quantile_reference_cells=data.get("quantile_reference_cells"),
+    )
+
+
+def load_track(path: str, mmap: bool = True) -> Dict[str, torch.Tensor]:
+    """One track file: a dict from chromosome to a float tensor of bins.
+
+    With `mmap` the file is memory-mapped, so processes that read the same
+    file share one copy in the operating system's cache instead of holding
+    one each. Files written in torch's legacy format cannot be mapped and are
+    read normally.
+    """
+    if mmap:
+        try:
+            return torch.load(path, map_location="cpu", weights_only=False, mmap=True)
+        except (RuntimeError, ValueError, TypeError):
+            pass
+    return torch.load(path, map_location="cpu", weights_only=False)
+
+
+class _SampleView:
+    """Read-only list-like access to the samples, one dict per index."""
+
+    def __init__(self, dataset: "EPIGenomicDataset"):
+        self._ds = dataset
+
+    def __len__(self) -> int:
+        return len(self._ds)
+
+    def __getitem__(self, idx: int) -> dict:
+        return self._ds.sample(int(idx))
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self._ds.sample(i)
+
+
 class EPIGenomicDataset(Dataset):
     """
     PyTorch Dataset for Enhancer-Promoter Interaction prediction.
@@ -108,6 +163,10 @@ class EPIGenomicDataset(Dataset):
         promoter_seq : str   (DNA sequence around promoter center)
         distance     : float (log-scaled genomic distance)
         label        : float (0 or 1)
+
+    The rows are held as NumPy columns (see src.bengi.PairTable), so millions
+    of rows fit in memory and pickle cheaply to DataLoader workers. Track files
+    are opened lazily in each process, memory-mapped where possible.
     """
 
     _FEATS_ORDER_8 = [
@@ -130,12 +189,17 @@ class EPIGenomicDataset(Dataset):
         ref_genome_path: Optional[str] = None,
         normalize_epi: bool = True,
         rows: Optional[List[dict]] = None,
+        table: Optional[PairTable] = None,
+        presence_channels: bool = False,
+        track_quantiles: Optional[str] = None,
+        quantile_reference_cells: Optional[List[str]] = None,
+        mmap_tracks: bool = True,
     ):
         """
         Parameters
         ----------
         bengi_paths : path(s) to BENGI TSV / TSV.gz benchmark files, read in
-                      order. Ignored when `rows` is given.
+                      order. Ignored when `rows` or `table` is given.
         feats_config_path : path to the JSON mapping cell→mark→.pt file
         feats_order : ordered list of epigenetic mark names to use
         seq_len : genomic window size (bp) for epigenetic features
@@ -147,13 +211,23 @@ class EPIGenomicDataset(Dataset):
         normalize_epi : apply per-feature min-max normalisation
         rows : BENGI rows already parsed by `src.bengi` (and possibly filtered
                or deduplicated). Used instead of reading `bengi_paths`.
+        table : the rows as a `src.bengi.PairTable`, for large row sets.
+        presence_channels : append one channel per mark, 1 where the cell has
+                            that track and 0 where it is missing (its bins
+                            are then zero). Lets cells without some marks be
+                            used, and is what mark dropout switches off.
+        track_quantiles : JSON written by scripts/data/track_quantiles.py.
+                          With it, each cell's track is mapped, value by value,
+                          onto the mean quantiles of `quantile_reference_cells`
+                          before the window normalisation, so cells whose
+                          tracks differ in scale (sequencing depth) match.
+        mmap_tracks : memory-map the track files (shared between processes).
         """
         super().__init__()
 
         if isinstance(bengi_paths, str):
             bengi_paths = [bengi_paths]
         self.bengi_paths = bengi_paths or []
-        self._rows = rows
 
         self.seq_len = int(seq_len)
         self.bin_size = int(bin_size)
@@ -163,6 +237,8 @@ class EPIGenomicDataset(Dataset):
         self.enhancer_window = enhancer_window
         self.promoter_window = promoter_window
         self.normalize_epi = normalize_epi
+        self.presence_channels = bool(presence_channels)
+        self.mmap_tracks = mmap_tracks
 
         # Determine feature order
         if feats_order is None:
@@ -209,12 +285,22 @@ class EPIGenomicDataset(Dataset):
         if self.ref_genome_path:
             self._open_ref_genome(verbose=True)
 
-        # Storage
-        self.samples: List[dict] = []
-        self.feats: Dict[str, Dict[str, dict]] = {}  # cell → mark → {chrom: tensor}
+        if table is None:
+            table = PairTable.from_rows(rows if rows is not None
+                                        else read_rows(self.bengi_paths))
+        self._build_samples(table)
 
-        self._load_datasets()
-        print(f"  EPIGenomicDataset ready: {len(self.samples)} samples, "
+        # Track files per cell, opened lazily in each process (see _track).
+        self.track_paths: Dict[str, Dict[str, str]] = {}
+        self._feats: Dict[Tuple[str, str], dict] = {}
+        for code in np.unique(self.cell_code).tolist():
+            self._find_cell_tracks(self.cell_names[code])
+
+        self.quantile_maps = None
+        if track_quantiles:
+            self.quantile_maps = self._quantile_maps(track_quantiles,
+                                                     quantile_reference_cells)
+        print(f"  EPIGenomicDataset ready: {len(self)} samples, "
               f"{self.num_feats} marks, {self.num_bins} bins")
 
     # ---------------------------------------------------------------
@@ -233,9 +319,11 @@ class EPIGenomicDataset(Dataset):
             self.ref_genome_path = None
 
     def __getstate__(self):
-        # Drop the unpicklable open FASTA handle; workers reopen lazily.
+        # Drop the unpicklable open FASTA handle and the opened tracks; each
+        # worker reopens both lazily.
         state = self.__dict__.copy()
         state["ref_genome"] = None
+        state["_feats"] = {}
         return state
 
     def __setstate__(self, state):
@@ -243,61 +331,67 @@ class EPIGenomicDataset(Dataset):
         self.ref_genome = None  # reopened on first sequence access in this process
 
     # ---------------------------------------------------------------
-    def _load_datasets(self):
-        # One parser for every script: src/bengi.py. Row order is file order,
-        # so row i of the test set is row i of the saved predictions.
-        rows = self._rows if self._rows is not None else read_rows(self.bengi_paths)
-        for row in rows:
-            chrom = row["chrom"]
-            cell = row["cell"]
-            enh_coord = row["enh_coord"]
-            tss_coord = row["tss_coord"]
+    def _build_samples(self, table: PairTable):
+        """The window of every row, computed for all rows at once."""
+        c = table.columns
+        self.cell_names = list(table.vocab["cell"])
+        self.chrom_names = list(table.vocab["chrom"])
+        self.assay_names = list(table.vocab["assay"])
+        enh_coord = (c["enh_start"].astype(np.int64) + c["enh_end"]) // 2
+        tss_coord = c["tss_coord"].astype(np.int64)
 
-            mid = (enh_coord + tss_coord) // 2
-            seq_begin = mid - self.seq_len // 2
-            seq_end = mid + self.seq_len // 2
+        mid = (enh_coord + tss_coord) // 2
+        seq_begin = mid - self.seq_len // 2
+        seq_end = mid + self.seq_len // 2
+        start_bin = seq_begin // self.bin_size
+        stop_bin = seq_end // self.bin_size
 
-            enh_bin = enh_coord // self.bin_size
-            prom_bin = tss_coord // self.bin_size
-            start_bin = seq_begin // self.bin_size
-            stop_bin = seq_end // self.bin_size
+        left_pad = np.where(start_bin < 0, -start_bin, 0)
+        start_bin = np.maximum(start_bin, 0)
+        limit = np.array([self.chrom_bins.get(name, np.iinfo(np.int64).max)
+                          for name in self.chrom_names], dtype=np.int64)
+        limit = limit[c["chrom"]] if len(table) else np.zeros(0, np.int64)
+        right_pad = np.where(stop_bin > limit, stop_bin - limit, 0)
+        stop_bin = np.minimum(stop_bin, limit)
 
-            left_pad, right_pad = 0, 0
-            if start_bin < 0:
-                left_pad = abs(start_bin)
-                start_bin = 0
-            if chrom in self.chrom_bins and stop_bin > self.chrom_bins[chrom]:
-                right_pad = stop_bin - self.chrom_bins[chrom]
-                stop_bin = self.chrom_bins[chrom]
+        self.cols = {
+            "start_bin": start_bin, "stop_bin": stop_bin,
+            "left_pad": left_pad, "right_pad": right_pad,
+            "enh_bin": enh_coord // self.bin_size,
+            "prom_bin": tss_coord // self.bin_size,
+            "enh_coord": enh_coord, "prom_coord": tss_coord,
+            "label": c["label"].astype(np.int8),
+            "dist": c["dist"].astype(np.float64),
+        }
+        self.cell_code = c["cell"].astype(np.int32)
+        self.chrom_code = c["chrom"].astype(np.int32)
+        self.assay_code = c["assay"].astype(np.int32)
+        self.table = table
 
-            self.samples.append({
-                "start_bin": start_bin,
-                "stop_bin": stop_bin,
-                "left_pad": left_pad,
-                "right_pad": right_pad,
-                "enh_bin": enh_bin,
-                "prom_bin": prom_bin,
-                "enh_coord": enh_coord,
-                "prom_coord": tss_coord,
-                "cell": cell,
-                "chrom": chrom,
-                "label": int(row["label"]),
-                "dist": float(row["dist"]),
-                "assay": row.get("assay", "unknown"),
-            })
+    def sample(self, idx: int) -> dict:
+        """Everything known about one sample, as a dict."""
+        c = self.cols
+        return {"start_bin": int(c["start_bin"][idx]), "stop_bin": int(c["stop_bin"][idx]),
+                "left_pad": int(c["left_pad"][idx]), "right_pad": int(c["right_pad"][idx]),
+                "enh_bin": int(c["enh_bin"][idx]), "prom_bin": int(c["prom_bin"][idx]),
+                "enh_coord": int(c["enh_coord"][idx]), "prom_coord": int(c["prom_coord"][idx]),
+                "cell": self.cell_names[self.cell_code[idx]],
+                "chrom": self.chrom_names[self.chrom_code[idx]],
+                "label": int(c["label"][idx]), "dist": float(c["dist"][idx]),
+                "assay": self.assay_names[self.assay_code[idx]]}
 
-            # Lazy-load .pt files per cell line
-            if cell not in self.feats:
-                self._load_cell_features(cell)
-        self._rows = None  # the samples hold everything that is needed
+    @property
+    def samples(self) -> _SampleView:
+        return _SampleView(self)
 
-    def _load_cell_features(self, cell: str):
-        """Load all epigenetic signal .pt files for a cell line."""
+    # ---------------------------------------------------------------
+    def _find_cell_tracks(self, cell: str):
+        """Check which track files of a cell exist; they are read later."""
         if cell not in self.feats_config:
             print(f"  WARNING: cell '{cell}' not in feats_config – skipping")
-            self.feats[cell] = {}
+            self.track_paths[cell] = {}
             return
-        self.feats[cell] = {}
+        found = {}
         for mark in self.feats_order:
             if mark not in self.feats_config[cell]:
                 print(f"  WARNING: mark '{mark}' not in config for {cell}")
@@ -306,34 +400,77 @@ class EPIGenomicDataset(Dataset):
             if not os.path.exists(pt_path):
                 print(f"  WARNING: {pt_path} not found")
                 continue
-            self.feats[cell][mark] = torch.load(pt_path, map_location="cpu", weights_only=False)
-        if not self.feats[cell]:
+            found[mark] = pt_path
+        if not found:
             # Every chromatin channel would be zeros, and the run would report
             # numbers as if nothing were wrong. Stop instead.
             raise FileNotFoundError(
                 f"no epigenetic track files could be loaded for '{cell}'. "
                 f"Looked for the files named in the feature config under "
                 f"{os.path.dirname(next(iter(self.feats_config[cell].values())))}")
-        print(f"  Loaded {len(self.feats[cell])}/{self.num_feats} marks for {cell}")
+        self.track_paths[cell] = found
+        print(f"  Loaded {len(found)}/{self.num_feats} marks for {cell}")
+
+    def _track(self, cell: str, mark: str) -> Optional[dict]:
+        """The chromosome dict of one track, opened on first use here."""
+        path = self.track_paths.get(cell, {}).get(mark)
+        if path is None:
+            return None
+        key = (cell, mark)
+        if key not in self._feats:
+            self._feats[key] = load_track(path, self.mmap_tracks)
+        return self._feats[key]
+
+    def _quantile_maps(self, path: str, reference_cells: Optional[List[str]]):
+        """Per cell and mark, (cell quantiles, reference quantiles) for np.interp."""
+        with open(path) as handle:
+            quantiles = json.load(handle)
+        if not reference_cells:
+            raise ValueError("track_quantiles needs quantile_reference_cells: the "
+                             "cells whose mean quantiles define the reference")
+        maps = {}
+        for mark in self.feats_order:
+            ref = [quantiles[c][mark] for c in reference_cells
+                   if mark in quantiles.get(c, {})]
+            if not ref:
+                continue                     # this mark is left as it is
+            reference = np.mean(np.array(ref, dtype=np.float64), axis=0)
+            for cell in self.track_paths:
+                q = quantiles.get(cell, {}).get(mark)
+                if q is None:
+                    if mark in self.track_paths[cell]:
+                        raise KeyError(f"no quantiles for {cell} {mark} in {path}")
+                    continue
+                q = np.array(q, dtype=np.float64)
+                # np.interp needs increasing points; ties (runs of zeros) are
+                # broken by a negligible ramp.
+                q = q + np.arange(len(q)) * 1e-9
+                maps[(cell, mark)] = (q, reference)
+        return maps
 
     # ---------------------------------------------------------------
     def __len__(self):
-        return len(self.samples)
+        return len(self.cols["label"])
 
     def __getitem__(self, idx) -> dict:
-        s = self.samples[idx]
-        start_bin = s["start_bin"]
-        stop_bin = s["stop_bin"]
-        left_pad = s["left_pad"]
-        right_pad = s["right_pad"]
-        cell = s["cell"]
-        chrom = s["chrom"]
+        c = self.cols
+        start_bin = int(c["start_bin"][idx])
+        stop_bin = int(c["stop_bin"][idx])
+        left_pad = int(c["left_pad"][idx])
+        right_pad = int(c["right_pad"][idx])
+        cell = self.cell_names[self.cell_code[idx]]
+        chrom = self.chrom_names[self.chrom_code[idx]]
 
         # --- Epigenetic features: (num_feats, num_bins) ---
         feat_rows = []
         for mark in self.feats_order:
-            if cell in self.feats and mark in self.feats[cell] and chrom in self.feats[cell][mark]:
-                row = self.feats[cell][mark][chrom][start_bin:stop_bin]
+            track = self._track(cell, mark)
+            if track is not None and chrom in track:
+                row = track[chrom][start_bin:stop_bin]
+                if self.quantile_maps is not None and (cell, mark) in self.quantile_maps:
+                    q, reference = self.quantile_maps[(cell, mark)]
+                    row = torch.from_numpy(np.interp(
+                        row.numpy(), q, reference).astype(np.float32))
             else:
                 row = torch.zeros(stop_bin - start_bin)
             feat_rows.append(row.unsqueeze(0))  # (1, bins)
@@ -352,8 +489,8 @@ class EPIGenomicDataset(Dataset):
             ar = _normalize_minmax(ar)
 
         # --- Enhancer / Promoter relative indices (for index-based feature extraction) ---
-        enh_idx = s["enh_bin"] - start_bin + left_pad
-        prom_idx = s["prom_bin"] - start_bin + left_pad
+        enh_idx = int(c["enh_bin"][idx]) - start_bin + left_pad
+        prom_idx = int(c["prom_bin"][idx]) - start_bin + left_pad
 
         # Clamp to valid range
         enh_idx = max(0, min(enh_idx, self.num_bins - 1))
@@ -370,19 +507,27 @@ class EPIGenomicDataset(Dataset):
         # Prepend positional encoding to features (NOT normalized)
         ar = torch.cat([pos_enc, ar], dim=0)     # (num_feats + 1, num_bins)
 
+        if self.presence_channels:
+            present = self.track_paths.get(cell, {})
+            flags = torch.tensor([[1.0 if mark in present else 0.0]
+                                  for mark in self.feats_order])
+            ar = torch.cat([ar, flags.expand(-1, self.num_bins)], dim=0)
+
         # --- DNA sequences ---
-        enh_seq = self._extract_seq(chrom, s["enh_coord"], self.enhancer_window)
-        prom_seq = self._extract_seq(chrom, s["prom_coord"], self.promoter_window)
+        enh_coord = int(c["enh_coord"][idx])
+        prom_coord = int(c["prom_coord"][idx])
+        enh_seq = self._extract_seq(chrom, enh_coord, self.enhancer_window)
+        prom_seq = self._extract_seq(chrom, prom_coord, self.promoter_window)
 
         # Distance: log-scaled (same formula as original Kansformer)
-        dist_scaled = math.log2(1 + 500_000 / max(s["dist"], 1.0))
+        dist_scaled = math.log2(1 + 500_000 / max(float(c["dist"][idx]), 1.0))
 
         return {
             "epi": ar,                                           # (num_feats+1, num_bins)
             "enhancer_seq": enh_seq,                             # str
             "promoter_seq": prom_seq,                            # str
             "chrom": chrom,                                      # str
-            "label": torch.tensor([s["label"]], dtype=torch.float),
+            "label": torch.tensor([int(c["label"][idx])], dtype=torch.float),
             "dist": torch.tensor([dist_scaled], dtype=torch.float),
             "enh_idx": torch.tensor([enh_idx], dtype=torch.float),
             "prom_idx": torch.tensor([prom_idx], dtype=torch.float),
@@ -394,9 +539,11 @@ class EPIGenomicDataset(Dataset):
         Fitting the sequence encoder needs only the DNA, so this skips the
         track slicing and normalisation that `__getitem__` does.
         """
-        s = self.samples[idx]
-        return (self._extract_seq(s["chrom"], s["enh_coord"], self.enhancer_window),
-                self._extract_seq(s["chrom"], s["prom_coord"], self.promoter_window))
+        chrom = self.chrom_names[self.chrom_code[idx]]
+        return (self._extract_seq(chrom, int(self.cols["enh_coord"][idx]),
+                                  self.enhancer_window),
+                self._extract_seq(chrom, int(self.cols["prom_coord"][idx]),
+                                  self.promoter_window))
 
     def _extract_seq(self, chrom: str, center: int, window: int) -> str:
         """Extract a DNA sequence of `window` bp centred on `center`."""
@@ -409,13 +556,17 @@ class EPIGenomicDataset(Dataset):
     # ---------------------------------------------------------------
     def get_chrom_groups(self) -> np.ndarray:
         """Return an array of chromosome strings for GroupKFold splitting."""
-        return np.array([s["chrom"] for s in self.samples])
+        return np.array(self.chrom_names)[self.chrom_code] if len(self) else np.array([])
+
+    def get_cells(self) -> np.ndarray:
+        """The cell line of every sample."""
+        return np.array(self.cell_names)[self.cell_code] if len(self) else np.array([])
 
     def get_labels(self) -> np.ndarray:
-        return np.array([s["label"] for s in self.samples])
+        return self.cols["label"].astype(np.int64)
 
     def get_distances(self) -> np.ndarray:
-        return np.array([s["dist"] for s in self.samples])
+        return self.cols["dist"].copy()
 
 
 # ===================================================================

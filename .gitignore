@@ -26,6 +26,8 @@ figures/
 results/run_state.json
 results/**/run_state*.json
 results/logs/
+# Per-row predictions on the extended test sets are large; summary.json is kept.
+results/external/**/*.npz
 
 # Python
 __pycache__/
