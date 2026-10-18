@@ -94,6 +94,8 @@ def main():
     parser.add_argument("--out", default="results/external")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--amp", action="store_true",
+                        help="mixed precision on a GPU, as train.py scores its test set")
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--track-quantiles", default=None,
                         help="quantile file on this machine, for runs trained "
@@ -128,7 +130,7 @@ def main():
             dataset = EPIDataset(config, encoder, source_dataset=genomic)
             loader = DataLoader(dataset, batch_size=args.batch_size,
                                 shuffle=False, num_workers=args.workers)
-            metrics = evaluate_loader(model, loader, device, config, use_amp=False)
+            metrics = evaluate_loader(model, loader, device, config, use_amp=args.amp)
             dest.parent.mkdir(parents=True, exist_ok=True)
             np.savez(dest, predictions=metrics["predictions"], labels=metrics["labels"],
                      cell=genomic.get_cells(), chrom=genomic.get_chrom_groups(),
