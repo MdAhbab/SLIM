@@ -56,9 +56,11 @@ def out_root() -> Path:
 
 
 def open_text(path) -> Iterable[str]:
-    """Open a plain or gzipped text file for reading."""
-    path = str(path)
-    return gzip.open(path, "rt") if path.endswith(".gz") else open(path, "rt")
+    """Open a plain or gzipped text file for reading. The content decides, not
+    the name: some ENCODE files named .gz are plain text."""
+    with open(path, "rb") as handle:
+        gzipped = handle.read(2) == b"\x1f\x8b"
+    return gzip.open(path, "rt") if gzipped else open(path, "rt")
 
 
 # ---------------------------------------------------------------------------

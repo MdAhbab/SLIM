@@ -5,9 +5,13 @@ Check the new benchmark files against the rules before any of them is used.
      may name HMEC, NHEK or HUVEC (or another name a source uses for them).
      This rule is fatal: the script exits with an error.
   2. No repeats of test pairs. A training or validation pair whose enhancer
-     and gene also form a test pair is removed from the file (the test pairs
-     are BENGI's HMEC and NHEK sets plus every file in BENGI_extra_test). The
-     count is reported per file.
+     and gene also form a pair of a primary test set is removed from the file.
+     The primary test sets are the ones results are reported on: BENGI's HMEC
+     and NHEK sets and the extra test files built from Rao et al.'s loops
+     (names containing "_rao2014": the full HMEC and NHEK sets and HUVEC).
+     Repeats of the other extra test files (ENCODE loop calls for the same
+     cells) are only counted; evaluation on those uses the rows that do not
+     repeat a training pair. Both counts are reported per file.
   3. All eight tracks. Every cell named in any file must have all eight track
      files, either among the existing six cell lines or in
      features_new_cells.json.
@@ -80,15 +84,19 @@ def main():
     banned = {a.lower() for a in manifest["test_only"]["aliases"]}
     banned |= {c.lower() for c in manifest["test_only"]["cells"]}
 
-    # The test pairs: the published test set and every extra test file.
+    # The test pairs: the primary sets (removed from training) and the others
+    # (counted only).
+    extra = sorted((out / "BENGI_extra_test").glob("*.tsv.gz"))
     test_files = sorted(bengi.glob("HMEC.*")) + sorted(bengi.glob("NHEK.*"))
-    test_files += sorted((out / "BENGI_extra_test").glob("*.tsv.gz"))
+    test_files += [p for p in extra if "_rao2014" in p.name]
+    secondary_files = [p for p in extra if "_rao2014" not in p.name]
     if not test_files:
         sys.exit(f"no test files found under {bengi}; download the tools group first")
     test_rows = read_rows([str(p) for p in test_files])
     test_pairs = {pair_id(r) for r in test_rows}
     test_enh = {r["enh_id"] for r in test_rows}
     test_genes = {r["gene"] for r in test_rows}
+    secondary_pairs = {pair_id(r) for r in read_rows([str(p) for p in secondary_files])}
 
     reference = read_rows([str(p) for c in ("GM12878", "HeLa", "K562", "IMR90")
                            for p in bengi.glob(f"{c}.HiC-Benchmark.v3.tsv*")])
@@ -100,6 +108,8 @@ def main():
 
     report: Dict = {"test_files": [p.name for p in test_files],
                     "test_pairs": len(test_pairs),
+                    "secondary_test_files": [p.name for p in secondary_files],
+                    "secondary_test_pairs": len(secondary_pairs),
                     "reference_bengi_hic_train": describe(reference, test_enh, test_genes),
                     "files": {}}
     fatal: List[str] = []
@@ -117,6 +127,8 @@ def main():
                  "cells_missing_tracks": sorted(cells - complete),
                  "outside_hg19": outside,
                  "test_pair_repeats": len(repeats),
+                 "secondary_test_pair_repeats": sum(pair_id(r) in secondary_pairs
+                                                    for r in rows),
                  "before": describe(rows, test_enh, test_genes)}
         if repeats and not args.keep_test_repeats:
             kept = [line for line in gzip.open(path, "rt")

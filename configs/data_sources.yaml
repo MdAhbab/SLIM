@@ -262,6 +262,15 @@ encode:
     biosample: "HCT116"
     histone_marks: ["H3K27ac", "H3K27me3", "H3K36me3", "H3K4me1", "H3K4me3", "H3K9me3"]
 
+# ABC biosample names (Nasser 2021 table) for the cells scored head to head.
+abc_celltypes:
+  HMEC: "mammary_epithelial_cell-Roadmap"
+  NHEK: "keratinocyte-Roadmap"
+  HUVEC: "endothelial_cell_of_umbilical_vein-Roadmap"
+  K562: "K562-Roadmap"
+  GM12878: "GM12878-Roadmap"
+  HCT116: "HCT116-ENCODE"
+
 # Downloaded by hand (steps in datasets/README.md).
 manual:
   - name: Javierre et al. 2016 promoter capture Hi-C peak matrix

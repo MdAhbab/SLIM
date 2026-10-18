@@ -68,6 +68,41 @@ def test_bigwig_binning_matches_hand_values(tmp_path):
     assert signals["chr1"].max() == 0          # absent from the file
 
 
+def test_staged_conversion_matches_direct_and_cleans_up(tmp_path):
+    pytest.importorskip("pyBigWig")
+    pytest.importorskip("torch")
+    import pyBigWig
+    import torch
+    src = tmp_path / "raw" / "E000-DNase.pval.signal.bigwig"
+    src.parent.mkdir()
+    bw = pyBigWig.open(str(src), "w")
+    bw.addHeader([("chr21", 48129895)])
+    bw.addEntries(["chr21"], [1000], ends=[1600], values=[3.0])
+    bw.close()
+    stage = tmp_path / "stage"
+    results = []
+    for name, extra in (("direct", {}), ("staged", {"stage": str(stage)})):
+        job = {"cell": "X", "mark": "DNase", "src": str(src), "kind": "bigwig",
+               "dest": str(tmp_path / name / "bigWig_X_DNase.500bp.pt"), **extra}
+        assert prepare_tracks.convert(job)["status"] == "ok"
+        results.append(torch.load(job["dest"])["chr21"])
+    assert torch.equal(results[0], results[1])
+    assert list(stage.iterdir()) == []         # the staged copy is removed
+    assert src.exists()                        # the input is kept
+
+
+def test_compare_tracks_reports_identical_and_scaled_files():
+    import compare_tracks
+    rng = np.random.default_rng(0)
+    ref = {c: rng.random(50) for c in compare_tracks.CHROMS}
+    same = compare_tracks.compare(ref, ref)
+    assert same["bins"] == "same" and same["pearson"] == pytest.approx(1.0)
+    assert same["max_abs"] == 0
+    doubled = compare_tracks.compare({c: 2 * v for c, v in ref.items()}, ref)
+    assert doubled["pearson"] == pytest.approx(1.0)
+    assert doubled["ratio"] == pytest.approx(2.0)
+
+
 # ---------------------------------------------------------------------------
 # BENGI pair construction
 # ---------------------------------------------------------------------------
@@ -103,13 +138,13 @@ def test_pairs_follow_bengi_rules(toy_genome):
     links = build_pairs.link_pairs(loops, enh, tss)
     assert links == [("EH1", "G1")]
     rows, report = build_pairs.build("TOY", links, enh, tss)
-    by_gene = {r["fields"][9].split("|")[2]: r for r in rows}
+    by_gene = {r.gene: r for r in rows}
     # cutoff = the one link's distance, 29,900 bp (EH1 start to the G1 TSS at 100,100)
     assert report["cutoff_bp"] == pytest.approx(29900)
-    assert by_gene["G1"]["label"] == 1
-    assert "G2" in by_gene and by_gene["G2"]["label"] == 0     # 29,700 bp away
+    assert by_gene["G1"].label == 1
+    assert "G2" in by_gene and by_gene["G2"].label == 0     # 29,700 bp away
     assert "G3" not in by_gene and "G4" not in by_gene         # beyond the cutoff
-    fields = by_gene["G1"]["fields"]
+    fields = by_gene["G1"].fields
     assert fields[5] == "chr1:130000-130300|TOY|EH1"
     # the closest TSS of G1 to the enhancer centre is the minus-strand one
     assert fields[9] == "chr1:100100-100101|TOY|G1|ENST1b|-"
@@ -125,7 +160,7 @@ def test_rows_parse_with_the_training_parser(toy_genome, tmp_path):
     path = tmp_path / "TOY.HiC-Benchmark.v3.tsv.gz"
     build_pairs.write_rows(rows, path)
     parsed = read_rows([str(path)])
-    assert [r["label"] for r in parsed] == [r["label"] for r in rows]
+    assert [r["label"] for r in parsed] == [r.label for r in rows]
     assert parsed[0]["cell"] == "TOY" and parsed[0]["assay"] == "HiC"
 
 
@@ -162,6 +197,31 @@ def test_lift_bedpe_keeps_loops_whose_anchors_stay_together(monkeypatch, tmp_pat
     assert report["anchors"]["split"] == 1
 
 
+def test_encode_loop_files_pass_the_span_checks(tmp_path):
+    def bedpe(name, spans):
+        path = tmp_path / name
+        # Plain text under a .gz name, as some ENCODE files are.
+        path.write_text("#chr1\tx1\tx2\tchr2\ty1\ty2\n" + "".join(
+            f"chr1\t1000\t6000\tchr1\t{1000 + s}\t{6000 + s}\n" for s in spans))
+        return path
+
+    sound = [200_000] * 99 + [9_000_000]               # 1% beyond 5 Mb
+    loops, report = build_pairs.read_bedpe(bedpe("sound.bedpe.gz", sound), "hg19")
+    assert len(loops) == 99 and report["loops_kept"] == 99
+    failed = [200_000] * 90 + [9_000_000] * 10         # 10% beyond 5 Mb
+    loops, report = build_pairs.read_bedpe(bedpe("failed.bedpe.gz", failed), "hg19")
+    assert loops == [] and report["dropped"]
+
+
+def test_loop_match_counts_nearby_loops_only():
+    loops = [(("chr1", s, s + 5000), ("chr1", s + 300_000, s + 305_000))
+             for s in range(0, 10_000_000, 1_000_000)]
+    near = [(("chr1", a[1] + 10_000, a[2] + 10_000), b) for a, b in loops]
+    far = [(("chr1", a[1] + 500_000, a[2] + 500_000), b) for a, b in loops]
+    assert build_pairs.loop_match(loops, near) == 1.0
+    assert build_pairs.loop_match(loops, far) == 0.0
+
+
 # ---------------------------------------------------------------------------
 # The test-cell rule
 # ---------------------------------------------------------------------------
@@ -194,9 +254,15 @@ def test_audit_removes_repeats_of_test_pairs(tmp_path):
              [row.format(label=1, cell="HMEC", enh="EH1")])
     write_gz(bengi / "NHEK.HiC-Benchmark.v3.tsv.gz",
              [row.format(label=0, cell="NHEK", enh="EH9")])
+    # A primary (Rao) extra test set and a secondary (ENCODE) one.
+    write_gz(out / "BENGI_extra_test" / "HUVEC.HiC_rao2014-Benchmark.v3.tsv.gz",
+             [row.format(label=1, cell="HUVEC", enh="EH3")])
+    write_gz(out / "BENGI_extra_test" / "HUVEC.intactHiC_encode-Benchmark.v3.tsv.gz",
+             [row.format(label=1, cell="HUVEC", enh="EH2")])
     path = out / "BENGI_extended" / "Bcell.HiC-Benchmark.v3.tsv.gz"
     write_gz(path, [row.format(label=1, cell="Bcell", enh="EH1"),
-                    row.format(label=0, cell="Bcell", enh="EH2")])
+                    row.format(label=0, cell="Bcell", enh="EH2"),
+                    row.format(label=0, cell="Bcell", enh="EH3")])
     env = dict(os.environ, SLIM_RAW=str(raw), SLIM_OUT=str(out))
     result = subprocess.run(
         [sys.executable, str(ROOT / "scripts" / "data" / "audit_new_data.py"),
@@ -204,4 +270,9 @@ def test_audit_removes_repeats_of_test_pairs(tmp_path):
         env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
     remaining = gzip.open(path, "rt").read().splitlines()
+    # EH1 repeats BENGI's HMEC set and EH3 the Rao HUVEC set: both go. EH2
+    # repeats only the secondary set, so it stays and is counted.
     assert len(remaining) == 1 and "EH2" in remaining[0]
+    entry = json.loads((tmp_path / "audit.json").read_text())["files"][path.name]
+    assert entry["test_pair_repeats"] == 2
+    assert entry["secondary_test_pair_repeats"] == 1

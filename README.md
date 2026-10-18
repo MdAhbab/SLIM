@@ -236,7 +236,7 @@ Check the installation without any data:
 
 ```bash
 python run.py --check              # packages, GPU, disk, data files
-python -m pytest -q                # 78 tests, about 40 seconds
+python -m pytest -q                # 82 tests, about a minute
 python -m pytest -q -m slow        # end to end on synthetic data, about 45 seconds
 ```
 
@@ -321,10 +321,15 @@ Everything is written under `datasets/`, which is not version-controlled.
 bash scripts/data/setup_wsl.sh            # Linux or WSL: pyBigWig, bedtools, liftOver
 python scripts/data/resolve_sources.py    # freeze accessions to datasets/resolved.json
 python scripts/data/download.py --groups all
-python scripts/data/prepare_tracks.py --groups all   # 500 bp tracks, as above
+python scripts/data/prepare_tracks.py --groups all --stage ~/stage  # 500 bp tracks, as above
+python scripts/data/compare_tracks.py --ours datasets/processed/check     --reference <reference track folder> --cell HMEC   # conversion check
 python scripts/data/build_pairs.py --all             # BENGI-style pairs from loops
 python scripts/data/audit_new_data.py                # test-cell and repeat rules
+python scripts/data/convert_eval.py all              # CRISPR, ABC, eQTL, TargetFinder, CBOEP2
 ```
+
+`--stage` copies each input to a local folder before reading it. Under WSL,
+reading bigWigs in place on the Windows drive is several times slower.
 
 `prepare_tracks.py` reproduces the conversion behind the existing track files.
 It takes the mean per 500 bp bin and then arcsinh for the bigWig tracks, and

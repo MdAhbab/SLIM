@@ -3,7 +3,9 @@ Convert the evaluation sources into the benchmark format or into score tables.
 
   crispr        ENCODE-rE2G CRISPR benchmark (GRCh38). Valid tested
                 element-gene pairs are lifted to hg19 and written as benchmark
-                rows, label = Regulated, one file per cell type.
+                rows, label = Regulated, one file per cell type and split
+                (CRISPR: the K562 set ENCODE-rE2G was trained on;
+                CRISPRheldout: its five held-out cell types).
   targetfinder  TargetFinder pairs (hg19). Promoters are regions without gene
                 IDs, so the gene field holds the promoter's coordinates.
   cboep2        CBOEP2 pair sets (hg19), every folder, every cell.
@@ -67,8 +69,9 @@ def write(lines: List[str], path: Path) -> int:
 def crispr(raw: Path, out: Path) -> Dict:
     from liftover import lift_intervals
     report = {}
-    rows: Dict[str, List[str]] = defaultdict(list)
+    rows: Dict[tuple, List[str]] = defaultdict(list)
     for path in sorted((raw / "eval" / "crispr").glob("*.tsv.gz")):
+        split = "CRISPRheldout" if "heldout" in path.name else "CRISPR"
         records = list(csv.DictReader(open_text(path), delimiter="\t"))
         records = [r for r in records if r.get("ValidConnection", "TRUE") == "TRUE"]
         elements = [(r["chrom"], int(r["chromStart"]), int(r["chromEnd"])) for r in records]
@@ -81,12 +84,13 @@ def crispr(raw: Path, out: Path) -> Dict:
             if e is None or t is None or e[0] != t[0]:
                 continue
             cell = CELL_NAMES.get(r["CellType"], r["CellType"])
-            rows[cell].append(row(r["Regulated"] == "TRUE", e[0], e[1], e[2],
-                                  f"CRISPR{i}", cell, t[1], r["measuredGeneEnsemblId"]))
+            rows[cell, split].append(row(r["Regulated"] == "TRUE", e[0], e[1], e[2],
+                                         f"{split}{i}", cell, t[1],
+                                         r["measuredGeneEnsemblId"]))
             kept += 1
         report[path.name] = {"valid_pairs": n, "lifted": kept, "liftover": counts}
-    for cell, lines in rows.items():
-        name = f"{cell}.CRISPR-Benchmark.v3.tsv.gz"
+    for (cell, split), lines in rows.items():
+        name = f"{cell}.{split}-Benchmark.v3.tsv.gz"
         positives = sum(line.startswith("1\t") for line in lines)
         report[name] = {"rows": write(lines, out / "eval" / "crispr" / name),
                         "positives": positives}
@@ -118,15 +122,25 @@ def cboep2(raw: Path, out: Path) -> Dict:
     for path in sorted((raw / "eval" / "cboep2").rglob("*.csv")):
         if path.stem.endswith("_prev"):
             continue
+        # One file per cell. Names are either BENGI's own ("chr:s-e|CELL|cCRE",
+        # "chr:t-t+1|CELL|gene|transcript|strand"), kept so pairs match BENGI's,
+        # or CBOEP2's ("CELL|chr:s-e"), which carry no IDs.
+        cell = CELL_NAMES.get(path.stem, path.stem)
         lines = []
         for r in csv.DictReader(open(path)):
-            cell = CELL_NAMES.get(r["enhancer_name"].split("|")[0],
-                                  r["enhancer_name"].split("|")[0])
+            chrom, start, end = (r["enhancer_chrom"], r["enhancer_start"],
+                                 r["enhancer_end"])
+            enh = r["enhancer_name"].split("|")
+            prom = r["promoter_name"].split("|")
             tss = int(r["promoter_name"].split(":")[-1].split("-")[0])
-            lines.append(row(r["label"] == "1", r["enhancer_chrom"],
-                             int(r["enhancer_start"]), int(r["enhancer_end"]),
-                             f"CBE_{r['enhancer_chrom']}_{r['enhancer_start']}",
-                             cell, tss, f"CBP_{r['promoter_chrom']}_{tss}"))
+            enh_id = enh[2] if len(enh) == 3 else f"CBE_{chrom}_{start}"
+            gene, transcript, strand = (prom[2:5] if len(prom) == 5 else
+                                        (f"CBP_{r['promoter_chrom']}_{tss}", "", "+"))
+            lines.append("\t".join([
+                str(int(r["label"] == "1")), r["enhancer_distance_to_promoter"],
+                chrom, start, end, f"{chrom}:{start}-{end}|{cell}|{enh_id}",
+                r["promoter_chrom"], r["promoter_start"], r["promoter_end"],
+                f"{r['promoter_chrom']}:{tss}-{tss + 1}|{cell}|{gene}|{transcript}|{strand}"]))
         folder = path.parent.name
         name = f"{cell}.{folder.strip('_')}-Benchmark.v3.tsv.gz"
         report[f"{folder}/{name}"] = {
@@ -165,6 +179,7 @@ def abc(raw: Path, out: Path, list_only: bool) -> Dict:
     report = {}
     test_files = sorted((raw / "reference" / "transepi" / "data" / "BENGI").glob("*.tsv.gz"))
     test_files += sorted((out / "BENGI_extra_test").glob("*.tsv.gz"))
+    test_files += sorted((out / "eval" / "crispr").glob("*.tsv.gz"))
     for path in test_files:
         cell = path.name.split(".")[0]
         if cell not in elements:

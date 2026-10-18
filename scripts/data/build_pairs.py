@@ -6,7 +6,9 @@ github.com/weng-lab/BENGI, Scripts/Generate-Benchmark) for 3D-contact data,
 in the "all pairs, natural ratio" form (the v3 files used here):
 
   1. Enhancers are the cell type's enhancer-like cCREs (Registry v1, hg19),
-     minus any within 2 kb of a GENCODE v19 transcript start (TSS).
+     minus any within 2 kb of a GENCODE v19 transcript start (TSS). Where the
+     Registry has no enhancer-like calls for a cell, they are called from the
+     cell's DNase and H3K27ac tracks by the Registry's rule (derived_enhancers).
   2. A loop links an enhancer to a gene when one anchor overlaps the enhancer
      and the other overlaps a TSS of that gene (+/- 2 kb). Loops whose anchors
      lie on different chromosomes are ignored.
@@ -24,7 +26,8 @@ reads, at the gene's TSS closest to the enhancer centre:
 
 Sources (all coordinates hg19 by the time they reach `build`):
   rao        Rao et al. 2014 HiCCUPS loop lists
-  bedpe      ENCODE loop calls (lifted from GRCh38 when needed)
+  bedpe      ENCODE loop calls (lifted from GRCh38 when needed), all files of
+             one assay pooled, after the span checks under MAX_SPAN
   javierre   Javierre et al. 2016 peak matrix, CHiCAGO score >= 5 per cell
   jung       Jung et al. 2019 significant promoter capture Hi-C interactions,
              promoter named by gene symbol
@@ -44,7 +47,7 @@ import json
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
@@ -54,6 +57,12 @@ from common import load_manifest, load_resolved, open_text, out_root, raw_root  
 ELS_COLOUR = "255,205,0"      # enhancer-like state in the cell-type cCRE files
 PROXIMAL = 2000               # BENGI's TSS +/- 2 kb ("TSS.2019.4K")
 JAVIERRE_MIN_SCORE = 5.0
+# ENCODE loop calls only (Rao's lists are used as BENGI used them). Loops longer
+# than MAX_SPAN are dropped, and a file with more than MAX_LONG of its loops
+# beyond it is dropped whole as a failed call set (sound lists have < 0.5%).
+MAX_SPAN = 5_000_000
+MAX_LONG = 0.02
+ELS_Z = 1.64                  # the Registry's "high signal" Z-score
 
 Interval = Tuple[str, int, int]
 
@@ -130,6 +139,47 @@ def cell_enhancers(ccre_path: Path, tss: TSSIndex) -> EnhancerIndex:
     return EnhancerIndex(kept)
 
 
+def derived_enhancers(ccre_path: Path, tracks: Dict[str, Path],
+                      tss: TSSIndex) -> EnhancerIndex:
+    """Enhancer-like cCREs called from the cell's own DNase and H3K27ac tracks.
+
+    For cells whose Registry v1 file has no enhancer-like calls (ENCODE had no
+    H3K27ac for them when the hg19 Registry was built). The Registry's rule is
+    applied to the 500 bp tracks: a cCRE is enhancer-like when the Z-score,
+    over all cCREs, of its log signal (the largest bin it touches) is above
+    ELS_Z for both marks. The TSS-proximal ones are then removed as in
+    cell_enhancers. check_derived_els measures this against the Registry's
+    own calls on HMEC.
+    """
+    import torch
+    rows = []
+    for line in open_text(ccre_path):
+        f = line.split("\t", 4)
+        rows.append((f[0], int(f[1]), int(f[2]), f[3]))
+    high = np.ones(len(rows), dtype=bool)
+    for mark in ("DNase", "H3K27ac"):
+        signal = {c: v.numpy() for c, v in torch.load(tracks[mark]).items()}
+        values = np.zeros(len(rows))
+        for i, (chrom, start, end, _) in enumerate(rows):
+            if chrom in signal:
+                values[i] = signal[chrom][start // 500:(end - 1) // 500 + 1].max()
+        logged = np.log10(np.sinh(values) + 1e-3)        # undo arcsinh, then log
+        high &= (logged - logged.mean()) / logged.std() > ELS_Z
+    return EnhancerIndex([r for r, keep in zip(rows, high) if keep and not
+                          tss.genes_in(r[0], r[1] - PROXIMAL, r[2] + PROXIMAL - 1)])
+
+
+def track_files(out: Path, cell: str) -> Dict[str, Path]:
+    """The cell's DNase and H3K27ac track files written by prepare_tracks.py."""
+    found = {}
+    for mark in ("DNase", "H3K27ac"):
+        for folder in ("tracks", "check"):
+            path = out / folder / f"bigWig_{cell}_{mark}.500bp.pt"
+            if path.exists():
+                found[mark] = path
+    return found
+
+
 # ---------------------------------------------------------------------------
 # The BENGI procedure
 # ---------------------------------------------------------------------------
@@ -150,8 +200,20 @@ def link_pairs(loops: Sequence[Tuple[Interval, Interval]], enh: EnhancerIndex,
     return links
 
 
+class Row(NamedTuple):
+    """One benchmark row, kept as its output line (a cell can have millions)."""
+    label: int
+    enhancer: str
+    gene: str
+    line: str
+
+    @property
+    def fields(self) -> List[str]:
+        return self.line.split("\t")
+
+
 def build(cell: str, links: List[Tuple[str, str]], enh: EnhancerIndex,
-          tss: TSSIndex) -> Tuple[List[Dict], Dict]:
+          tss: TSSIndex) -> Tuple[List[Row], Dict]:
     """Steps 3 and 4 of the procedure, from (enhancer, gene) links."""
     links = [(e, g) for e, g in links if g in tss.by_gene]
     if not links:
@@ -159,45 +221,43 @@ def build(cell: str, links: List[Tuple[str, str]], enh: EnhancerIndex,
     dist = {(e, g): tss.distance(g, *enh.coords[e][1:]) for e, g in set(links)}
     cutoff = float(np.percentile([dist[k] for k in links], 95))
     positives: Dict[str, Set[str]] = defaultdict(set)
-    for e, g in set(links):
-        if dist[(e, g)] <= cutoff:
+    for (e, g), d in dist.items():
+        if d <= cutoff:
             positives[e].add(g)
-    pairs = []
+    rows = []
     window = int(round(cutoff))
     for e in sorted(positives):
         chrom, start, end = enh.coords[e]
         for g in sorted(tss.genes_in(chrom, max(0, start - window), end + window)):
-            pairs.append((e, g, int(g in positives[e])))
-    rows = [to_row(cell, e, g, label, enh, tss) for e, g, label in pairs]
+            rows.append(to_row(cell, e, g, int(g in positives[e]), enh, tss))
     report = {"links": len(links),
-              "distinct_links": len(set(links)), "cutoff_bp": cutoff,
+              "distinct_links": len(dist), "cutoff_bp": cutoff,
               "enhancers_linked": len(positives), "pairs": len(rows),
-              "positives": sum(r["label"] for r in rows)}
+              "positives": sum(r.label for r in rows)}
     report["positive_rate"] = report["positives"] / max(1, report["pairs"])
     return rows, report
 
 
 def to_row(cell: str, e: str, g: str, label: int, enh: EnhancerIndex,
-           tss: TSSIndex) -> Dict:
+           tss: TSSIndex) -> Row:
     chrom, start, end = enh.coords[e]
     centre = (start + end) / 2
     _, t, transcript, strand = tss.closest(g, centre)
     prom_start, prom_end = (t - 1499, t + 501) if strand == "+" else (t - 499, t + 1501)
-    return {
-        "label": label,
-        "distance": abs((t + t + 1) / 2 - centre),
-        "fields": [str(label), f"{abs((t + t + 1) / 2 - centre):.1f}", chrom,
-                   str(start), str(end), f"{chrom}:{start}-{end}|{cell}|{e}",
-                   chrom, str(prom_start), str(prom_end),
-                   f"{chrom}:{t}-{t + 1}|{cell}|{g}|{transcript}|{strand}"],
-    }
+    line = "\t".join([str(label), f"{abs((t + t + 1) / 2 - centre):.1f}", chrom,
+                      str(start), str(end), f"{chrom}:{start}-{end}|{cell}|{e}",
+                      chrom, str(prom_start), str(prom_end),
+                      f"{chrom}:{t}-{t + 1}|{cell}|{g}|{transcript}|{strand}"])
+    return Row(label, e, g, line)
 
 
-def write_rows(rows: List[Dict], path: Path):
+def write_rows(rows: List[Row], path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(path, "wt") as out:
+    tmp = path.with_name(path.name + ".tmp")
+    with gzip.open(tmp, "wt") as out:
         for row in rows:
-            out.write("\t".join(row["fields"]) + "\n")
+            out.write(row.line + "\n")
+    tmp.replace(path)
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +279,8 @@ def read_rao(path: Path) -> List[Tuple[Interval, Interval]]:
 
 
 def read_bedpe(path: Path, assembly: str) -> Tuple[List[Tuple[Interval, Interval]], Dict]:
+    """An ENCODE loop file in hg19, without loops longer than MAX_SPAN. A file
+    that fails the MAX_LONG check gives no loops."""
     loops = []
     for line in open_text(path):
         f = line.rstrip("\n").split("\t")
@@ -226,11 +288,19 @@ def read_bedpe(path: Path, assembly: str) -> Tuple[List[Tuple[Interval, Interval
             continue
         loops.append(((chrom_name(f[0]), int(f[1]), int(f[2])),
                       (chrom_name(f[3]), int(f[4]), int(f[5]))))
+    cis = [(a, b) for a, b in loops if a[0] == b[0]]
+    long = sum(abs(b[1] - a[1]) > MAX_SPAN for a, b in cis)
+    report = {"loops_in": len(loops), "long_fraction": round(long / max(1, len(cis)), 4)}
+    if long > MAX_LONG * len(cis):
+        return [], {**report, "loops_kept": 0, "dropped": "failed the span check"}
+    loops = [(a, b) for a, b in cis if abs(b[1] - a[1]) <= MAX_SPAN]
     if assembly == "GRCh38":
         from liftover import lift_bedpe
-        kept, report = lift_bedpe(loops)
-        return [(a, b) for _, a, b in kept], report
-    return loops, {"loops_in": len(loops), "loops_kept": len(loops)}
+        kept, lifted = lift_bedpe(loops)
+        loops = [(a, b) for _, a, b in kept]
+        report["liftover"] = lifted
+    report["loops_kept"] = len(loops)
+    return loops, report
 
 
 def read_javierre(path: Path, columns: Sequence[str]) -> List[Tuple[Interval, Interval]]:
@@ -352,24 +422,91 @@ def check_hmec(raw: Path, tss: TSSIndex, resolved: Dict) -> Dict:
     loops = read_rao(raw / "labels" / "rao2014" / "GSE63525_HMEC_HiCCUPS_looplist.txt.gz")
     rows, report = build("HMEC", link_pairs(loops, enh, tss), enh, tss)
     report["loops"] = len(loops)
-    ours = {(r["fields"][5].split("|")[2], r["fields"][9].split("|")[2]): r["label"]
-            for r in rows}
     published = {}
     for line in open_text(raw / "labels" / "bengi" / "Benchmark" /
                           "All-Pairs.Natural-Ratio" / "HMEC.HiC-Benchmark.v3.txt"):
         e, g, label = [x.strip() for x in line.split("\t")][:3]
         published[(e, g)] = int(label)
-    shared = set(ours) & set(published)
+    return {"ours": report, "published_pairs": len(published),
+            "published_positives": sum(published.values()),
+            **compare_pairs({(r.enhancer, r.gene): r.label for r in rows}, published)}
+
+
+def compare_pairs(ours: Dict[Tuple[str, str], int],
+                  reference: Dict[Tuple[str, str], int]) -> Dict[str, float]:
+    shared = set(ours) & set(reference)
     pos_o = {k for k, v in ours.items() if v}
-    pos_p = {k for k, v in published.items() if v}
+    pos_r = {k for k, v in reference.items() if v}
     return {
-        "ours": report,
-        "published_pairs": len(published), "published_positives": len(pos_p),
-        "pair_jaccard": len(shared) / max(1, len(set(ours) | set(published))),
-        "positive_jaccard": len(pos_o & pos_p) / max(1, len(pos_o | pos_p)),
-        "label_agreement_on_shared": (sum(ours[k] == published[k] for k in shared)
+        "pair_jaccard": len(shared) / max(1, len(set(ours) | set(reference))),
+        "positive_jaccard": len(pos_o & pos_r) / max(1, len(pos_o | pos_r)),
+        "label_agreement_on_shared": (sum(ours[k] == reference[k] for k in shared)
                                       / max(1, len(shared))),
     }
+
+
+def check_derived_els(raw: Path, out: Path, tss: TSSIndex, resolved: Dict) -> Dict:
+    """HMEC's Rao pairs built on derived enhancers against those built on the
+    Registry's (which reproduce BENGI exactly)."""
+    ccre = [raw / f["dest"] for f in resolved["files"]
+            if f["kind"] == "ccre" and f["cell"] == "HMEC"][0]
+    registry = cell_enhancers(ccre, tss)
+    derived = derived_enhancers(ccre, track_files(out, "HMEC"), tss)
+    loops = read_rao(raw / "labels" / "rao2014" / "GSE63525_HMEC_HiCCUPS_looplist.txt.gz")
+    pairs = {}
+    for name, enh in (("registry", registry), ("derived", derived)):
+        rows, report = build("HMEC", link_pairs(loops, enh, tss), enh, tss)
+        pairs[name] = ({(r.enhancer, r.gene): r.label for r in rows}, report)
+    a, b = set(registry.coords), set(derived.coords)
+    return {"enhancers_registry": len(a), "enhancers_derived": len(b),
+            "enhancer_jaccard": len(a & b) / max(1, len(a | b)),
+            "registry": pairs["registry"][1], "derived": pairs["derived"][1],
+            **compare_pairs(pairs["derived"][0], pairs["registry"][0])}
+
+
+def loop_match(query: List[Tuple[Interval, Interval]], target: List[Tuple[Interval, Interval]],
+               slack: int = 25_000) -> float:
+    """Fraction of query loops with a target loop whose two anchor midpoints
+    are each within `slack` bp of theirs."""
+    def key(loop):
+        a, b = sorted(loop, key=lambda x: x[1])
+        return a[0], (a[1] + a[2]) // 2, (b[1] + b[2]) // 2
+
+    cells = defaultdict(list)
+    for loop in target:
+        chrom, m1, m2 = key(loop)
+        cells[chrom, m1 // slack, m2 // slack].append((m1, m2))
+    hits = 0
+    for loop in query:
+        chrom, m1, m2 = key(loop)
+        near = (cells.get((chrom, m1 // slack + i, m2 // slack + j), [])
+                for i in (-1, 0, 1) for j in (-1, 0, 1))
+        hits += any(abs(t1 - m1) <= slack and abs(t2 - m2) <= slack
+                    for group in near for t1, t2 in group)
+    return hits / max(1, len(query))
+
+
+def check_liftover(raw: Path, resolved: Dict) -> Dict:
+    """Rao's GM12878 loops (hg19) against each ENCODE GM12878 loop file lifted
+    from GRCh38. The same files without liftover are the control: if the lift
+    works, matches rise well above it."""
+    rao = read_rao(raw / "labels" / "rao2014" /
+                   "GSE63525_GM12878_primary+replicate_HiCCUPS_looplist.txt.gz")
+    report = {"rao_loops": len(rao)}
+    for record in resolved["files"]:
+        if record["kind"] != "loops" or record["cell"] != "GM12878":
+            continue
+        path = raw / record["dest"]
+        lifted, info = read_bedpe(path, record.get("assembly", "hg19"))
+        if not lifted:
+            report[record["dest"]] = info
+            continue
+        unlifted, _ = read_bedpe(path, "hg19")
+        report[record["dest"]] = {
+            "loops_kept": len(lifted),
+            "rao_matched_lifted": round(loop_match(rao, lifted), 4),
+            "rao_matched_unlifted": round(loop_match(rao, unlifted), 4)}
+    return report
 
 
 def main():
@@ -380,6 +517,10 @@ def main():
     parser.add_argument("--sources", nargs="*",
                         default=["rao", "bedpe", "javierre", "jung"])
     parser.add_argument("--check-hmec", action="store_true")
+    parser.add_argument("--check-liftover", action="store_true",
+                        help="match Rao's GM12878 loops against ENCODE's, lifted")
+    parser.add_argument("--check-derived-els", action="store_true",
+                        help="HMEC pairs on derived against Registry enhancers")
     args = parser.parse_args()
 
     manifest, resolved = load_manifest(), load_resolved()
@@ -392,6 +533,12 @@ def main():
     if args.check_hmec:
         reports["hmec_check"] = check_hmec(raw, tss, resolved)
         print(json.dumps(reports["hmec_check"], indent=1))
+    if args.check_liftover:
+        reports["liftover_check"] = check_liftover(raw, resolved)
+        print(json.dumps(reports["liftover_check"], indent=1))
+    if args.check_derived_els:
+        reports["derived_els_check"] = check_derived_els(raw, out, tss, resolved)
+        print(json.dumps(reports["derived_els_check"], indent=1))
 
     cells = list(manifest["cells"]) if args.all else args.cells
     for cell in cells:
@@ -401,16 +548,27 @@ def main():
         if not ccre or not ccre[0].exists():
             print(f"  {cell}: no cCRE file yet, skipped")
             continue
-        enh = cell_enhancers(ccre[0], tss)
+        enh, enhancer_source = cell_enhancers(ccre[0], tss), "registry"
+        if not enh.coords:
+            tracks = track_files(out, cell)
+            if len(tracks) < 2:
+                print(f"  {cell}: no enhancer-like cCREs in the Registry and no "
+                      f"DNase and H3K27ac tracks yet to call them, skipped")
+                continue
+            enh, enhancer_source = derived_enhancers(ccre[0], tracks, tss), "derived"
         for assay, source, links, source_report in gather_sources(
                 cell, info, resolved, raw, set(args.sources), enh, tss, symbols):
             rows, report = build(cell, links, enh, tss)
             report.update(source=source, inputs=source_report,
-                          enhancers=len(enh.coords))
+                          enhancers=len(enh.coords), enhancer_calls=enhancer_source)
             folder = output_folder(cell, info["role"], manifest, source)
             name = f"{cell}.{assay}-Benchmark.v3.tsv.gz"
-            if source in ("javierre2016", "jung2019") or (cell in ("HMEC", "NHEK")
-                                                          and source == "rao2014"):
+            # BENGI already has files for its six cell lines, and a test cell's
+            # files must say which source they come from (audit_new_data.py
+            # treats the rao2014 ones as the primary test sets), so these and
+            # the capture Hi-C sources are named by source.
+            if (source in ("javierre2016", "jung2019") or info.get("existing")
+                    or info["role"] == "test"):
                 name = f"{cell}.{assay}_{source}-Benchmark.v3.tsv.gz"
             if rows:
                 write_rows(rows, out / folder / name)

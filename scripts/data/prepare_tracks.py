@@ -21,7 +21,7 @@ GRCh38 inputs are converted first: peaks with liftOver, bigWigs with CrossMap.
 
 Usage:
     python scripts/data/prepare_tracks.py --groups tracks-check tracks-core
-    python scripts/data/prepare_tracks.py --groups all --workers 6 --delete-raw
+    python scripts/data/prepare_tracks.py --groups all --workers 6 --stage ~/stage
     python scripts/data/prepare_tracks.py --cells HUVEC HepG2
     python scripts/data/prepare_tracks.py --groups tracks-pretrain --download --delete-raw
 
@@ -35,6 +35,7 @@ import argparse
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -143,14 +144,20 @@ def convert(job: Dict) -> Dict:
         fetched = download(job["url"], src, size=job.get("size"), md5=job.get("md5"))
         if fetched["status"] == "failed":
             return {**job, "status": "failed", "error": fetched["error"]}
+    staged = None
     try:
-        with tempfile.TemporaryDirectory(dir=dest.parent) as tmp:
+        if job.get("stage"):
+            staged = Path(job["stage"]) / src.name
+            staged.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, staged)
+        read = staged or src
+        with tempfile.TemporaryDirectory(dir=job.get("stage") or dest.parent) as tmp:
             tmp = Path(tmp)
             if job["kind"] == "peaks":
-                path = lift_peaks(src, tmp) if job.get("assembly") == "GRCh38" else src
+                path = lift_peaks(read, tmp) if job.get("assembly") == "GRCh38" else read
                 signals = bin_peaks(str(path))
             else:
-                path = crossmap_bigwig(src, tmp) if job.get("assembly") == "GRCh38" else src
+                path = crossmap_bigwig(read, tmp) if job.get("assembly") == "GRCh38" else read
                 signals = bin_bigwig(str(path))
             save(signals, dest)
         values = np.concatenate([v for c, v in signals.items() if c not in SKIP])
@@ -163,10 +170,13 @@ def convert(job: Dict) -> Dict:
         return {**job, "status": "ok", "summary": summary}
     except Exception as error:
         return {**job, "status": "failed", "error": repr(error)}
+    finally:
+        if staged is not None and staged.exists():
+            staged.unlink()
 
 
 def plan_jobs(resolved: Dict, cells: List[str], groups: List[str],
-              raw: Path, out: Path, delete_raw: bool) -> List[Dict]:
+              raw: Path, out: Path, delete_raw: bool, stage: str = None) -> List[Dict]:
     manifest = load_manifest()
     jobs = []
     for record in resolved["files"]:
@@ -187,7 +197,8 @@ def plan_jobs(resolved: Dict, cells: List[str], groups: List[str],
                      "kind": "peaks" if peaks else "bigwig",
                      "assembly": record.get("assembly", "hg19"),
                      "url": record["url"], "size": record.get("size"),
-                     "md5": record.get("md5"), "delete_raw": delete_raw})
+                     "md5": record.get("md5"), "delete_raw": delete_raw,
+                     "stage": stage})
     return jobs
 
 
@@ -228,12 +239,16 @@ def main():
                         help="download each missing input just before converting "
                              "it; with --delete-raw only a few inputs are on disk "
                              "at any time (for notebooks with small scratch disks)")
+    parser.add_argument("--stage", help="copy each input to this local folder before "
+                             "reading it; much faster when the inputs sit on a "
+                             "slow or network drive (for WSL, a folder under ~)")
     parser.add_argument("--redo", action="store_true", help="overwrite existing files")
     args = parser.parse_args()
 
     groups = [] if "all" in args.groups else args.groups
     raw, out = raw_root(), out_root()
-    jobs = plan_jobs(load_resolved(), args.cells, groups, raw, out, args.delete_raw)
+    jobs = plan_jobs(load_resolved(), args.cells, groups, raw, out, args.delete_raw,
+                     args.stage)
     pending = [j for j in jobs if args.redo or not Path(j["dest"]).exists()]
     missing = [j for j in pending if not Path(j["src"]).exists()]
     ready = pending if args.download else [j for j in pending if Path(j["src"]).exists()]
