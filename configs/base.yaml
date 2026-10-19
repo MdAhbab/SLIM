@@ -64,6 +64,7 @@ data:
   presence_channels: false   # one channel per track, 1 where the cell has it;
                              # n_epigenetic_features is then 17
   track_norm: "none"         # none | cell_quantile (needs paths.track_quantiles)
+  negatives: "natural"       # natural | class_balanced (src/shortcuts.py)
   feats_order:
     - "CTCF"
     - "DNase"
@@ -127,6 +128,10 @@ training:
   samples_per_epoch: 0       # rows drawn per epoch, shared between training
                              # cells (0: every row, shuffled)
   log_test_each_epoch: false # diagnostic only; never used for selection
+  debias: "none"             # none | poe: product of experts with the
+                             # distance and locus prior (src/shortcuts.py)
+  rank_weight: 0.0           # cross-cell ranking loss weight (0: off)
+  rank_pairs: 8              # ranking pairs added to each training step
 
 augmentation:
   enabled: true

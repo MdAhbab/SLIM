@@ -41,6 +41,22 @@ def shift_tracks(epi: torch.Tensor, shift: int, mode: str = "tracks",
     return out
 
 
+class PairedRows(Dataset):
+    """Two rows of a dataset per item, a positive and a negative, for a
+    ranking loss (training.rank_weight)."""
+
+    def __init__(self, dataset, pairs):
+        self.dataset = dataset
+        self.pairs = np.asarray(pairs)
+
+    def __len__(self):
+        return len(self.pairs)
+
+    def __getitem__(self, i):
+        positive, negative = self.pairs[i]
+        return {"pos": self.dataset[int(positive)], "neg": self.dataset[int(negative)]}
+
+
 class CellBalancedSampler(Sampler):
     """A fresh sample of the training rows every epoch, shared fairly between
     cell lines.
@@ -319,7 +335,7 @@ class EPIDataset(Dataset):
         else:
             seq_enc = self.encoder.transform(dna, chrom=raw.get("chrom"))  # (64, L)
 
-        return {
+        item = {
             "seq": seq_enc,
             "epi": epi.float(),
             "label": raw["label"],
@@ -327,6 +343,9 @@ class EPIDataset(Dataset):
             "enh_idx": raw["enh_idx"],
             "prom_idx": raw["prom_idx"],
         }
+        if "bias" in raw:
+            item["bias"] = raw["bias"]
+        return item
 
     def _getitem_manual(self, idx):
         seq, epi, label, dist = self._manual_data[idx]

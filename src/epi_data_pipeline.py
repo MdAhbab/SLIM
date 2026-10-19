@@ -363,6 +363,8 @@ class EPIGenomicDataset(Dataset):
             "label": c["label"].astype(np.int8),
             "dist": c["dist"].astype(np.float64),
         }
+        # Logit of a bias model per row (training.debias); None when unused.
+        self.bias = None
         self.cell_code = c["cell"].astype(np.int32)
         self.chrom_code = c["chrom"].astype(np.int32)
         self.assay_code = c["assay"].astype(np.int32)
@@ -522,7 +524,11 @@ class EPIGenomicDataset(Dataset):
         # Distance: log-scaled (same formula as original Kansformer)
         dist_scaled = math.log2(1 + 500_000 / max(float(c["dist"][idx]), 1.0))
 
+        extra = {}
+        if self.bias is not None:
+            extra["bias"] = torch.tensor([float(self.bias[idx])], dtype=torch.float)
         return {
+            **extra,
             "epi": ar,                                           # (num_feats+1, num_bins)
             "enhancer_seq": enh_seq,                             # str
             "promoter_seq": prom_seq,                            # str

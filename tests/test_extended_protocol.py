@@ -267,3 +267,89 @@ def test_training_runs_under_the_extended_protocol(tmp_path):
     assert len(history) == 2 and history[0]["test_aupr"] is not None
     results = np.load(tmp_path / "run" / "eval_results.npz", allow_pickle=True)
     assert len(results["val_labels"]) == 30
+
+
+# ---------------------------------------------------------------------------
+# Measures against the locus shortcut
+# ---------------------------------------------------------------------------
+def shortcut_table(tmp_path):
+    """Two cells; E1-G1 is positive in A and negative in B."""
+    write_gz(tmp_path / "A.HiC-Benchmark.v3.tsv.gz", [
+        bengi_row(1, "A", "E1", "G1", tss=220_000),
+        bengi_row(0, "A", "E1", "G2", tss=222_000),       # same enhancer, near distance
+        bengi_row(0, "A", "E1", "G3", tss=600_000),       # same enhancer, far
+        bengi_row(0, "A", "E9", "G1", start=201_000, tss=220_000),  # same gene
+        bengi_row(0, "A", "E8", "G8", start=900_000, tss=930_000)])
+    write_gz(tmp_path / "B.HiC-Benchmark.v3.tsv.gz", [
+        bengi_row(0, "B", "E1", "G1", tss=220_000),
+        bengi_row(1, "B", "E5", "G5", start=700_000, tss=740_000)])
+    return PairTable.from_files(sorted(str(p) for p in tmp_path.glob("*.tsv.gz")))
+
+
+def test_class_balanced_negatives_keep_matched_negatives_only(tmp_path):
+    from src.shortcuts import class_balanced_negatives
+    table = shortcut_table(tmp_path)
+    kept = class_balanced_negatives(table, np.arange(len(table)))
+    pairs = {(table.row(i)["cell"], table.row(i)["enh_id"], table.row(i)["gene"]) for i in kept}
+    # A keeps its positive, the near same-enhancer negative and the
+    # same-gene negative; the far one and the unrelated one go. B has no
+    # negative sharing E5 or G5.
+    assert pairs == {("A", "E1", "G1"), ("A", "E1", "G2"), ("A", "E9", "G1"),
+                     ("B", "E5", "G5")}
+
+
+def test_locus_rates_leave_the_rows_own_cell_out():
+    from src.shortcuts import leave_one_cell_out_rate
+    keys = np.array([0, 0, 1])
+    cells = np.array([0, 1, 0])
+    labels = np.array([1, 0, 1])
+    rate = leave_one_cell_out_rate(keys, cells, labels, strength=1.0)
+    base = 2 / 3
+    # Row 0 sees only row 1 (another cell, label 0); row 1 sees only row 0;
+    # row 2's key appears in no other cell, so it gets the overall rate.
+    assert rate == pytest.approx([(0 + base) / 2, (1 + base) / 2, base])
+
+
+def test_discordant_pairs_join_one_pair_across_cells(tmp_path):
+    from src.shortcuts import discordant_pairs, locus_prior_logits
+    table = shortcut_table(tmp_path)
+    pairs = discordant_pairs(table, np.arange(len(table)))
+    assert len(pairs) == 1
+    pos, neg = (table.row(int(i)) for i in pairs[0])
+    assert (pos["cell"], pos["label"], neg["cell"], neg["label"]) == ("A", 1, "B", 0)
+    assert pos["enh_id"] == neg["enh_id"] and pos["gene"] == neg["gene"]
+    assert locus_prior_logits(table, np.arange(len(table))).shape == (len(table),)
+
+
+@pytest.mark.slow
+def test_training_runs_with_every_shortcut_measure(tmp_path):
+    sys.path.insert(0, str(ROOT / "tests"))
+    from test_end_to_end import run_training, write_config, write_dataset
+    bengi_dir, feats = write_dataset(tmp_path / "data")
+    config_path = tmp_path / "config.yaml"
+    write_config(config_path, bengi_dir, feats, epochs=1)
+    config = yaml.safe_load(config_path.read_text())
+    config["paths"]["bengi_dirs"] = [str(bengi_dir)]
+    # Rows that share enhancers and genes across cells, on both chromosome
+    # halves, so class balancing and the ranking loss have pairs to use.
+    for cell, flip in (("GM12878", 0), ("K562", 1)):
+        rows = []
+        for chrom in ("chr1", "chr2"):
+            for k in range(6):
+                rows.append(bengi_row((k + flip) % 2, cell, f"E{chrom}{k}", f"G{chrom}{k}",
+                                      start=200_000 + 2_000 * k, tss=230_000 + 2_000 * k,
+                                      chrom=chrom))
+                # As in BENGI, each enhancer is linked to some gene in the cell.
+                rows.append(bengi_row(1 - (k + flip) % 2, cell, f"E{chrom}{k}", f"H{chrom}{k}",
+                                      start=200_000 + 2_000 * k, tss=231_000 + 2_000 * k,
+                                      chrom=chrom))
+        write_gz(bengi_dir / f"{cell}.HiC_toy-Benchmark.v3.tsv.gz", rows)
+    config["data"].update(train_cells="all", negatives="class_balanced")
+    config["training"].update(valid_cells=["IMR90"], debias="poe",
+                              rank_weight=0.5, rank_pairs=2)
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    result = run_training(config_path, tmp_path / "run")
+    assert result.returncode == 0, result.stdout[-3000:] + result.stderr[-3000:]
+    assert "Debiasing: product of experts" in result.stdout
+    assert "Ranking loss:" in result.stdout
+    assert "Class-balanced negatives:" in result.stdout

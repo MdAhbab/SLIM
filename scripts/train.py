@@ -69,7 +69,7 @@ from src.bengi import (PairTable, bengi_files, fraction_of_rows, read_rows,
                        select_rows_for_config)
 from src.config import load_config
 from src.shutdown import run_main
-from src.dataset import CellBalancedSampler, EPIDataset
+from src.dataset import CellBalancedSampler, EPIDataset, PairedRows
 from src.encoding import CrossFitEncoder, POCD_ND_Encoder, chromosome_half
 from src.epi_data_pipeline import EPIGenomicDataset, dataset_options
 from src.slim_model import build_model
@@ -241,11 +241,17 @@ def forward_model(model, seq, epi, enh_idx, prom_idx):
     return cls_out, reg_out, attention, None
 
 
-def compute_loss(model, batch_out, labels, distances, config):
-    """Total training loss, shared by every variant."""
+def compute_loss(model, batch_out, labels, distances, config, bias=None):
+    """Total training loss, shared by every variant.
+
+    `bias` is the logit of a bias model (training.debias poe), added to the
+    network's logit in the classification loss only: a product of experts, so
+    the network is rewarded for what the bias model cannot explain.
+    """
     cls_out, reg_out, attention, aux = batch_out
     train_cfg = config["training"]
-    loss = nn.functional.binary_cross_entropy_with_logits(cls_out, labels)
+    logits = cls_out if bias is None else cls_out + bias
+    loss = nn.functional.binary_cross_entropy_with_logits(logits, labels)
     loss = loss + train_cfg["lambda_dist"] * nn.functional.mse_loss(
         reg_out, distances)
     loss = loss + config["model"].get("att_penalty", 0.1) * \
@@ -445,6 +451,7 @@ def extended_rows(config, files):
     table = PairTable.from_files(files, keep)
     table, report = table.deduplicate(data.get("dedup", "none"))
     is_valid = np.isin(table.strings("cell"), sorted(valid_cells))
+    report["rows_dropped_as_unbalanced_negatives"] = 0
     removed = 0
     if data.get("exclude_eval_pairs", False):
         pairs = table.pairs(np.flatnonzero(is_valid))
@@ -459,6 +466,13 @@ def extended_rows(config, files):
         table, is_valid = table.take(~drop), is_valid[~drop]
         report["exclusion_files"] = listed
     report["rows_removed_as_eval_pairs"] = removed
+    if data.get("negatives", "natural") == "class_balanced":
+        from src.shortcuts import class_balanced_negatives
+        keep = np.zeros(len(table), dtype=bool)
+        keep[class_balanced_negatives(table, np.flatnonzero(~is_valid))] = True
+        keep |= is_valid                      # validation keeps its natural ratio
+        report["rows_dropped_as_unbalanced_negatives"] = int((~keep).sum())
+        table, is_valid = table.take(keep), is_valid[keep]
     report["rows_out"] = len(table)
     return (table, np.flatnonzero(~is_valid).tolist(),
             np.flatnonzero(is_valid).tolist(), report)
@@ -601,8 +615,14 @@ def main():
               f"read, {row_report['duplicate_rows']:,} repeats merged, "
               f"{row_report['rows_removed_as_eval_pairs']:,} training rows removed "
               f"as validation or test pairs, {row_report['rows_out']:,} rows used.")
+        if row_report["rows_dropped_as_unbalanced_negatives"]:
+            print(f"  Class-balanced negatives: "
+                  f"{row_report['rows_dropped_as_unbalanced_negatives']:,} training "
+                  f"negatives dropped")
         train_genomic = EPIGenomicDataset(bengi_paths=None, table=table, **ds_kwargs)
     else:
+        if config["data"].get("negatives", "natural") != "natural":
+            raise SystemExit("data.negatives needs training.valid_cells")
         held = held_out_chroms(args, config)
         train_rows, row_report = select_rows_for_config(
             read_rows(train_files), held, config)
@@ -647,6 +667,18 @@ def main():
     encoder = fit_sequence_encoder(train_genomic, train_idx, config, args.seed)
     with open(os.path.join(save_dir, "encoder.pkl"), "wb") as f:
         pickle.dump(encoder, f)
+
+    debias = config["training"].get("debias", "none")
+    if debias == "poe":
+        from src.shortcuts import locus_prior_logits
+        bias = np.zeros(len(train_genomic), dtype=np.float32)
+        bias[np.asarray(train_idx)] = locus_prior_logits(train_genomic.table,
+                                                         np.asarray(train_idx))
+        train_genomic.bias = bias
+        print(f"Debiasing: product of experts with the distance and locus prior "
+              f"(training rows only)")
+    elif debias != "none":
+        raise ValueError("training.debias must be none or poe")
 
     train_dataset = EPIDataset(config, encoder, source_dataset=train_genomic)
     test_dataset = EPIDataset(config, encoder, source_dataset=test_genomic)
@@ -773,6 +805,28 @@ def main():
           "here.\n")
 
     stopped_early = False
+    # Ranking loss on rows with the same enhancer and gene, positive in one
+    # training cell line and negative in another (training.rank_weight).
+    rank_weight = config["training"].get("rank_weight", 0.0)
+    rank_batches = None
+    if rank_weight:
+        from src.shortcuts import discordant_pairs
+        pairs = discordant_pairs(train_genomic.table, np.asarray(train_idx), seed=args.seed)
+        print(f"Ranking loss: {len(pairs):,} cross-cell pairs, weight {rank_weight}")
+        if len(pairs) < config["training"].get("rank_pairs", 8):
+            raise SystemExit("too few cross-cell pairs for training.rank_weight; "
+                             "set it to 0 for this data")
+        rank_loader = DataLoader(PairedRows(train_dataset, pairs),
+                                 batch_size=config["training"].get("rank_pairs", 8),
+                                 shuffle=True, drop_last=True, generator=generator,
+                                 **loader_kwargs)
+
+        def cycle():
+            while True:
+                yield from rank_loader
+
+        rank_batches = cycle()
+
     log_test = config["training"].get("log_test_each_epoch", False)
     if log_test:
         print("Test metrics are logged every epoch as a diagnostic of the "
@@ -793,11 +847,23 @@ def main():
             dst = batch["dist"].float().to(device, non_blocking=True)
             enh_idx = batch["enh_idx"].float().to(device, non_blocking=True)
             prom_idx = batch["prom_idx"].float().to(device, non_blocking=True)
+            bias = (batch["bias"].float().to(device, non_blocking=True)
+                    if "bias" in batch else None)
 
             optimizer.zero_grad(set_to_none=True)
             with autocast(device_type="cuda", enabled=use_amp):
                 out = forward_model(model, seq, epi, enh_idx, prom_idx)
-                loss = compute_loss(model, out, lbl, dst, config)
+                loss = compute_loss(model, out, lbl, dst, config, bias)
+                if rank_batches is not None:
+                    pair = next(rank_batches)
+                    both = {k: torch.cat([pair["pos"][k], pair["neg"][k]]).float()
+                            .to(device, non_blocking=True)
+                            for k in ("seq", "epi", "enh_idx", "prom_idx")}
+                    scores = forward_model(model, both["seq"], both["epi"],
+                                           both["enh_idx"], both["prom_idx"])[0].float().view(-1)
+                    half = scores.shape[0] // 2
+                    loss = loss + rank_weight * nn.functional.softplus(
+                        scores[half:] - scores[:half]).mean()
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)

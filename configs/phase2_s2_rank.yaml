@@ -1,0 +1,8 @@
+# Stage 2: pilot P1a with the cross-cell ranking loss: pairs with the samen# enhancer and gene, positive in one training cell line and negative inn# another, the positive to score higher (src/shortcuts.py).
+extends: phase2_p1a.yaml
+
+experiment_name: "phase2_s2_rank"
+output_name: "phase2_s2_rank"
+
+training:
+  rank_weight: 0.5
