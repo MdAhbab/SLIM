@@ -1,0 +1,13 @@
+# Stage 2: pilot P1a with each cell's tracks mapped onto the mean quantiles of
+# the training cells (data.track_norm cell_quantile). Roadmap tracks differ
+# two to four times in scale between epigenomes, mostly through depth.
+extends: phase2_p1a.yaml
+
+experiment_name: "phase2_s2_quantile"
+output_name: "phase2_s2_quantile"
+
+paths:
+  track_quantiles: "D:/E/AI Models/FYDP-Model/data/genomic_data/phase2/track_quantiles.json"
+
+data:
+  track_norm: "cell_quantile"

@@ -1,0 +1,15 @@
+# Stage 2: pilot P1a with presence channels and mark dropout. Each training
+# sample hides a whole track with probability 0.1, so the model cannot lean on
+# any single mark, and cells without CTCF peaks (H1-derived mesendoderm,
+# trophoblast and mesenchymal cells) can train with that track marked missing.
+extends: phase2_p1a.yaml
+
+experiment_name: "phase2_s2_markdrop"
+output_name: "phase2_s2_markdrop"
+
+data:
+  presence_channels: true
+  n_epigenetic_features: 17
+
+augmentation:
+  mark_dropout: 0.1
