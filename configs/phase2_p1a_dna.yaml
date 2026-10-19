@@ -1,0 +1,11 @@
+# Pilot P1a with the DNA branch on. The September pilots chose chromatin only
+# on held-out chromosomes, a validation that did not predict test; this
+# repeats the choice under held-out-cell validation. Needs paths.ref_genome
+# (hg19 FASTA, indexed by pyfaidx on first use).
+extends: phase2_p1a.yaml
+
+experiment_name: "phase2_p1a_dna"
+output_name: "phase2_p1a_dna"
+
+data:
+  modalities: "all"

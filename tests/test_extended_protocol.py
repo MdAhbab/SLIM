@@ -269,6 +269,32 @@ def test_training_runs_under_the_extended_protocol(tmp_path):
     assert len(results["val_labels"]) == 30
 
 
+@pytest.mark.slow
+def test_training_reads_the_genome_under_the_extended_protocol(tmp_path):
+    pytest.importorskip("pyfaidx")
+    sys.path.insert(0, str(ROOT / "tests"))
+    from test_end_to_end import CHROMS, run_training, write_config, write_dataset
+    bengi_dir, feats = write_dataset(tmp_path / "data")
+    rng = np.random.default_rng(0)
+    genome = tmp_path / "toy.fa"
+    with open(genome, "w") as handle:
+        for chrom in CHROMS:
+            bases = "".join(rng.choice(list("ACGT"), size=500_000))
+            handle.write(f">{chrom}\n" + "\n".join(
+                bases[i:i + 60] for i in range(0, len(bases), 60)) + "\n")
+    config_path = tmp_path / "config.yaml"
+    write_config(config_path, bengi_dir, feats, epochs=1)
+    config = yaml.safe_load(config_path.read_text())
+    config["paths"].update(bengi_dirs=[str(bengi_dir)], ref_genome=str(genome))
+    config["data"].update(train_cells="all", modalities="all")
+    config["training"].update(valid_cells=["IMR90"], valid_samples=30,
+                              samples_per_epoch=64)
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    result = run_training(config_path, tmp_path / "run")
+    assert result.returncode == 0, result.stdout[-3000:] + result.stderr[-3000:]
+    assert f"Reference genome loaded: {genome}" in result.stdout
+
+
 # ---------------------------------------------------------------------------
 # Measures against the locus shortcut
 # ---------------------------------------------------------------------------
