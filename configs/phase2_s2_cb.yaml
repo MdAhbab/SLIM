@@ -1,4 +1,7 @@
-# Stage 2: pilot P1a with class-balanced negatives: for each training positive,n# one negative with the same enhancer and one with the same gene, matched inn# distance (src/shortcuts.py). Validation and test keep the natural ratio.
+# Stage 2: pilot P1a with class-balanced negatives. For each training
+# positive, one negative with the same enhancer and one with the same gene,
+# matched in distance (src/shortcuts.py). Validation and test keep the
+# natural ratio.
 extends: phase2_p1a.yaml
 
 experiment_name: "phase2_s2_cb"
