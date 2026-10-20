@@ -116,6 +116,9 @@ def parse_args():
     p.add_argument("--output-dir", default=None)
     p.add_argument("--device", default=None)
     p.add_argument("--no-amp", action="store_true")
+    p.add_argument("--init", default=None,
+                   help="pretrained.pt from scripts/pretrain.py: start the "
+                        "chromatin branch and the encoder from its weights")
     p.add_argument("--no-resume", action="store_true",
                    help="ignore any saved training state and start from epoch 1")
     p.add_argument("--dry-run", action="store_true",
@@ -296,6 +299,32 @@ def evaluate_loader(model, loader, device, config, use_amp=False):
     metrics["predictions"] = preds
     metrics["labels"] = labels
     return metrics
+
+
+def load_pretrained(model, path, config):
+    """Start the chromatin branch and the encoder from scripts/pretrain.py.
+
+    The pretrained run must be of the same variant and model settings; every
+    tensor it saved must exist here with the same shape. The heads and the
+    pooling start fresh.
+    """
+    saved = torch.load(path, map_location="cpu", weights_only=False)
+    if saved.get("variant") != config["model"].get("variant"):
+        raise SystemExit(f"{path} is variant {saved.get('variant')}, "
+                         f"this run is {config['model'].get('variant')}")
+    if saved["config"]["model"] != config["model"]:
+        raise SystemExit(f"{path} was pretrained with different model settings")
+    own = model.state_dict()
+    wrong = [k for k, v in saved["model"].items()
+             if k not in own or own[k].shape != v.shape]
+    if wrong:
+        raise SystemExit(f"{path} does not fit this model: {wrong[:5]}")
+    model.load_state_dict(saved["model"], strict=False)
+    n = sum(v.numel() for v in saved["model"].values())
+    parts = sorted({k.split(".")[0] for k in saved["model"]})
+    print(f"Initialised {len(saved['model'])} tensors ({n:,} values: "
+          f"{', '.join(parts)}) from {path}, pretrained for "
+          f"{saved.get('epoch')} epochs on {len(saved.get('corpus_cells', []))} epigenomes")
 
 
 def build_optimizer(model, config):
@@ -738,6 +767,11 @@ def main():
     model = build_model(config).to(device)
     total_params = sum(p.numel() for p in model.parameters())
     print(f"\nModel {variant}: {total_params:,} parameters")
+    if args.init:
+        # Before the weight average copies the model, and before a resume,
+        # which replaces these weights with the interrupted run's.
+        load_pretrained(model, args.init, config)
+        config["training"]["init"] = os.path.abspath(args.init)
 
     optimizer = build_optimizer(model, config)
     scheduler, step_per_batch = build_scheduler(optimizer, config, len(train_loader))

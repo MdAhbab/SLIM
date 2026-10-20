@@ -224,6 +224,27 @@ class SLIM(nn.Module):
         """Short label for the feed-forward sublayer in use."""
         return {"gelu": "A", "kan": "KA", "glu": "GA"}[self.memory_config.ffn_type]
 
+    def encode(self, seq: Tensor, epi: Tensor, return_trace: bool = False):
+        """Both branches and the survival-gated encoder, without the heads.
+
+        Returns the tokens (B, n_seq_tokens + n_epi_tokens, d_model), the gate
+        regularisation terms and, when requested, the memory trace (else
+        None). Pretraining (scripts/pretrain.py) reads the chromatin tokens.
+        """
+        seq = seq * self.seq_input_scale.to(seq.dtype)
+        x_seq = self.seq_cnn(seq).permute(0, 2, 1)
+        x_seq, _ = self.seq_bilstm(x_seq)
+        x_seq = self.seq_drop(x_seq)
+
+        epi = epi * self.epi_channel_mask.to(epi.dtype)
+        x_epi = self.epi_cnn(epi).permute(0, 2, 1)
+        x_epi, _ = self.epi_bilstm(x_epi)
+        x_epi = self.epi_drop(x_epi)
+
+        z = torch.cat([x_seq, x_epi], dim=1)
+        z = self.pos_enc(self.proj_drop(z))
+        return self.encoder(z, return_trace=return_trace)
+
     def forward(self, seq: Tensor, epi: Tensor, enh_idx: Tensor,
                 prom_idx: Tensor, return_trace: bool = False):
         """
@@ -243,21 +264,7 @@ class SLIM(nn.Module):
                 token indices written at each layer and the slots they took.
         """
         batch = seq.size(0)
-
-        seq = seq * self.seq_input_scale.to(seq.dtype)
-        x_seq = self.seq_cnn(seq).permute(0, 2, 1)
-        x_seq, _ = self.seq_bilstm(x_seq)
-        x_seq = self.seq_drop(x_seq)
-
-        epi = epi * self.epi_channel_mask.to(epi.dtype)
-        x_epi = self.epi_cnn(epi).permute(0, 2, 1)
-        x_epi, _ = self.epi_bilstm(x_epi)
-        x_epi = self.epi_drop(x_epi)
-
-        z = torch.cat([x_seq, x_epi], dim=1)
-        z = self.pos_enc(self.proj_drop(z))
-
-        z, aux, trace = self.encoder(z, return_trace=return_trace)
+        z, aux, trace = self.encode(seq, epi, return_trace=return_trace)
 
         pooled, A = self.att_pool(z)
 

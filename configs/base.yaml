@@ -143,3 +143,14 @@ augmentation:
                              # needs data.presence_channels
   shift_mode: "tracks"       # chromatin tracks only, zero-filled; the position
                              # channel stays aligned with the anchors
+
+# Masked pretraining of the chromatin branch and the encoder, read only by
+# scripts/pretrain.py; train.py --init starts fine-tuning from its output.
+pretrain:
+  windows_per_epoch: 200000  # fresh unlabelled windows each epoch
+  epochs: 4
+  lr: 0.0002                 # peak; warm-up and cosine as in training
+  mask_fraction: 0.15        # share of chromatin tokens hidden, in spans
+  max_span: 4                # span length 1 to max_span tokens (5 kb each)
+  hide_mark: true            # also hide one whole track per window
+  monitor_windows: 2000      # fixed windows scored after every epoch

@@ -214,9 +214,10 @@ class Kansformer(nn.Module):
         self.dist_kan1 = KANLinear(pool_dim, d_model)
         self.dist_kan2 = KANLinear(d_model, 1)
 
-    def forward(self, seq, epi, enh_idx, prom_idx):
-        B = seq.size(0)
-
+    def encode(self, seq, epi):
+        """Both branches and the KAN-Transformer, without the heads: tokens
+        of shape (B, n_seq_tokens + n_epi_tokens, d_model). Pretraining
+        (scripts/pretrain.py) reads the chromatin tokens."""
         seq = seq * self.seq_input_scale.to(seq.dtype)
         epi = epi * self.epi_channel_mask.to(epi.dtype)
 
@@ -238,7 +239,11 @@ class Kansformer(nn.Module):
         z = self.pos_enc(z)
 
         # --- KAN-Transformer ---
-        z = self.transformer(z)                   # (B, n_seq + n_epi, d_model)
+        return self.transformer(z)                # (B, n_seq + n_epi, d_model)
+
+    def forward(self, seq, epi, enh_idx, prom_idx):
+        B = seq.size(0)
+        z = self.encode(seq, epi)
 
         # --- Self-Attention Pooling ---
         M, A = self.att_pool(z)                   # M: (B, r, d_model), A: (B, r, S)

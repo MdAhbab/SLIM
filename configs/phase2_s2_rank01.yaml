@@ -1,0 +1,9 @@
+# Stage 2: the cross-cell ranking loss at a fifth of the first weight. At 0.5
+# it lowered validation AUPR (0.284 against 0.316-0.325 for P1a).
+extends: phase2_s2_rank.yaml
+
+experiment_name: "phase2_s2_rank01"
+output_name: "phase2_s2_rank01"
+
+training:
+  rank_weight: 0.1
