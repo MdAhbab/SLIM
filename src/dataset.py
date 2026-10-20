@@ -197,6 +197,23 @@ class EPIDataset(Dataset):
         # With the DNA branch switched off, the model never looks at the
         # encoded sequence, so skip the encoding work and send zeros.
         self.skip_sequence = config["data"].get("modalities", "all") == "epi"
+        # data.dna_input "embedding": the DNA input is the language-model
+        # embedding of the enhancer and the promoter (src/dna_embeddings.py)
+        # instead of the encoded sequence; "pocd" is the original encoding.
+        self.dna_input = config["data"].get("dna_input", "pocd")
+        self.embeddings = None
+        if self.dna_input == "embedding":
+            from src.dna_embeddings import ElementEmbeddings
+            self.embeddings = ElementEmbeddings(config["paths"]["dna_embeddings"])
+            expected = (config["data"].get("dna_segments"),
+                        config["data"].get("dna_embedding_dim"))
+            if expected != (self.embeddings.segments, self.embeddings.dim):
+                raise ValueError(
+                    f"data.dna_segments and dna_embedding_dim are {expected} but "
+                    f"the embeddings have ({self.embeddings.segments}, "
+                    f"{self.embeddings.dim})")
+        elif self.dna_input != "pocd":
+            raise ValueError("data.dna_input must be pocd or embedding")
 
         self.mode = None
         self._source = None
@@ -330,7 +347,14 @@ class EPIDataset(Dataset):
                     epi[1 + j] = 0.0
                     epi[1 + self.n_tracks + j] = 0.0
 
-        if self.skip_sequence:
+        if self.embeddings is not None:
+            if self.skip_sequence:
+                seq_enc = torch.zeros(2 * self.embeddings.segments, self.embeddings.dim)
+            else:
+                seq_enc = self.embeddings.pair(raw["chrom"],
+                                               int(self._source.cols["enh_coord"][idx]),
+                                               int(self._source.cols["prom_coord"][idx]))
+        elif self.skip_sequence:
             seq_enc = torch.zeros(4 ** self.encoder.k, len(dna) - self.encoder.k + 1)
         else:
             seq_enc = self.encoder.transform(dna, chrom=raw.get("chrom"))  # (64, L)

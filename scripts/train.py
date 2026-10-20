@@ -691,9 +691,15 @@ def main():
         print(f"Training fraction {fraction}: {len(train_idx):,} of {full:,} rows")
     train_labels = np.array([labels_all[i] for i in train_idx])
 
-    print(f"\nFitting the POCD-ND encoder "
-          f"({config['data'].get('encoder_fit', 'train')})...")
-    encoder = fit_sequence_encoder(train_genomic, train_idx, config, args.seed)
+    if config["data"].get("dna_input", "pocd") == "embedding":
+        # Language-model embeddings need no fitting (src/dna_embeddings.py).
+        print(f"\nDNA input: language-model embeddings from "
+              f"{config['paths']['dna_embeddings']}")
+        encoder = None
+    else:
+        print(f"\nFitting the POCD-ND encoder "
+              f"({config['data'].get('encoder_fit', 'train')})...")
+        encoder = fit_sequence_encoder(train_genomic, train_idx, config, args.seed)
     with open(os.path.join(save_dir, "encoder.pkl"), "wb") as f:
         pickle.dump(encoder, f)
 

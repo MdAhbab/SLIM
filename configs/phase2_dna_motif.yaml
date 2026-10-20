@@ -1,0 +1,14 @@
+# Sequence tracks across the whole window: CTCF motif matches on each strand
+# (scripts/data/motif_tracks.py), the same in every cell, read with the
+# chromatin tracks. Loops form mostly between convergent CTCF sites, and only
+# the sequence gives a site's orientation. On top of P1a; the feature list
+# must name the two tracks for every cell.
+extends: phase2_p1a.yaml
+
+experiment_name: "phase2_dna_motif"
+output_name: "phase2_dna_motif"
+
+data:
+  n_epigenetic_features: 11
+  feats_order: ["CTCF", "DNase", "H3K27ac", "H3K27me3", "H3K36me3", "H3K4me1",
+                "H3K4me3", "H3K9me3", "CTCFmotif_plus", "CTCFmotif_minus"]

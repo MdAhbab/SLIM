@@ -1,0 +1,10 @@
+# The language-model DNA branch and the CTCF motif tracks together.
+extends: phase2_dna_lm.yaml
+
+experiment_name: "phase2_dna_both"
+output_name: "phase2_dna_both"
+
+data:
+  n_epigenetic_features: 11
+  feats_order: ["CTCF", "DNase", "H3K27ac", "H3K27me3", "H3K36me3", "H3K4me1",
+                "H3K4me3", "H3K9me3", "CTCFmotif_plus", "CTCFmotif_minus"]

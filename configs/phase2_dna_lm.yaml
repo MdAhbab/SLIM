@@ -1,0 +1,17 @@
+# DNA branch from a DNA language model: each enhancer and promoter is read as
+# 8 parts of its Nucleotide Transformer embedding (scripts/data/dna_embeddings.py)
+# instead of the encoded sequence. On top of P1a; the paths are overridden on
+# each machine.
+extends: phase2_p1a.yaml
+
+experiment_name: "phase2_dna_lm"
+output_name: "phase2_dna_lm"
+
+paths:
+  dna_embeddings: "D:/E/AI Models/FYDP-Model/data/dna_embeddings"
+
+data:
+  modalities: "all"
+  dna_input: "embedding"
+  dna_segments: 8
+  dna_embedding_dim: 512

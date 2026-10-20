@@ -24,7 +24,8 @@ survival gate learns what to write before it sees a label. The baseline is
 pretrained the same way, without those terms.
 
 Only the chromatin branch and the encoder are trained here and handed on; the
-DNA branch is off (data.modalities "epi"). After every epoch the encoder
+DNA branch reads zeros (data.modalities is set to "epi" here, whatever the
+fine-tuning run uses). After every epoch the encoder
 weights, the head and the history are written to <output-dir>/pretrained.pt;
 `train.py --init <that file>` starts fine-tuning from it.
 
@@ -221,9 +222,9 @@ def main():
         config["model"]["variant"] = args.variant
     variant = config["model"].get("variant", "KA")
     pre = config.get("pretrain", {})
-    if config["data"].get("modalities", "all") != "epi":
-        raise SystemExit("pretraining covers the chromatin branch only: "
-                         "data.modalities must be epi")
+    # Pretraining covers the chromatin branch and the encoder; the DNA branch
+    # reads zeros here whatever the fine-tuning run will give it.
+    config["data"]["modalities"] = "epi"
     os.makedirs(args.output_dir, exist_ok=True)
     set_seed(args.seed)
     device = torch.device(args.device) if args.device else torch.device(
@@ -259,6 +260,8 @@ def main():
     model = build_model(config).to(device)
     k = config["data"]["kmer_size"]
     seq_shape = (4 ** k, config["data"]["sequence_length"] - k + 1)
+    if config["data"].get("dna_input", "pocd") == "embedding":
+        seq_shape = (model.n_seq_tokens, int(config["data"]["dna_embedding_dim"]))
     pool = model.epi_pool_factor
     masking = dict(n_tracks=n_tracks, pool=pool,
                    fraction=float(pre.get("mask_fraction", 0.15)),

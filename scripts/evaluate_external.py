@@ -97,6 +97,9 @@ def main():
     parser.add_argument("--amp", action="store_true",
                         help="mixed precision on a GPU, as train.py scores its test set")
     parser.add_argument("--workers", type=int, default=0)
+    parser.add_argument("--dna-embeddings", default=None,
+                        help="DNA embedding folder on this machine, for runs "
+                             "trained with data.dna_input embedding")
     parser.add_argument("--track-quantiles", default=None,
                         help="quantile file on this machine, for runs trained "
                              "with data.track_norm cell_quantile")
@@ -129,6 +132,8 @@ def main():
             if options["track_quantiles"] and args.track_quantiles:
                 options["track_quantiles"] = args.track_quantiles
             genomic = EPIGenomicDataset(bengi_paths=[str(test)], **options)
+            if args.dna_embeddings:
+                config["paths"]["dna_embeddings"] = args.dna_embeddings
             dataset = EPIDataset(config, encoder, source_dataset=genomic)
             loader = DataLoader(dataset, batch_size=args.batch_size,
                                 shuffle=False, num_workers=args.workers)

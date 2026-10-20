@@ -18,6 +18,8 @@ paths:
   # exclusion_files: [...]   test files (globs) whose pairs are removed from
   #                          training under data.exclude_eval_pairs
   # track_quantiles: "..."   written by scripts/data/track_quantiles.py
+  # dna_embeddings: "..."    folder written by scripts/data/dna_embeddings.py,
+  #                          for data.dna_input embedding
 
 data:
   sequence_length: 6000      # 3000 bp enhancer plus 3000 bp promoter
@@ -41,6 +43,12 @@ data:
                              # per chromosome half (odd, even) and encodes every
                              # row with the encoder of the other half.
   modalities: "all"          # all | seq | seq+pos | epi (no DNA branch)
+  dna_input: "pocd"          # pocd: the encoded sequence above. embedding:
+                             # language-model embeddings of the enhancer and
+                             # promoter (paths.dna_embeddings), dna_segments
+                             # parts each, of width dna_embedding_dim
+  dna_segments: 8
+  dna_embedding_dim: 512
   # Which training rows are used. BENGI gives GM12878 and HeLa three assay
   # files each (HiC, CTCF-ChIAPET, RNAPII-ChIAPET), while the test cell lines
   # have Hi-C only. ChIA-PET positives are much closer together (median 31 kb

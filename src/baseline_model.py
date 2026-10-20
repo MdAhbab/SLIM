@@ -4,7 +4,8 @@ import math
 from src.model_layers import (
     KANLinear, KAN, PositionalEncoding, SelfAttentionPooling,
 )
-from src.slim_model import build_epi_channel_mask, sequence_input_scale
+from src.slim_model import (build_epi_channel_mask, dna_projection, dna_tokens,
+                             sequence_input_scale)
 
 
 # ---------------------------------------------------------------------------
@@ -129,22 +130,28 @@ class Kansformer(nn.Module):
         num_heads = config['model'].get('num_heads', 6)
         kan_hidden = config['model'].get('kan_hidden', 64)
 
+        self.dna_input = config['data'].get('dna_input', 'pocd')
+        n_seq_tokens = dna_tokens(config) or n_seq_tokens
         self.n_seq_tokens = n_seq_tokens
         self.epi_pool_factor = 10  # MaxPool1d kernel → 5000/10 = 500 epi tokens
         self.n_epi_tokens = config['data']['epigenetic_bins'] // self.epi_pool_factor  # 500
         self.d_model = d_model
 
-        # --- Sequence Branch (POCD-ND encoded: 64 channels x L) ---
-        self.seq_cnn = nn.Sequential(
-            nn.Conv1d(64, 128, kernel_size=5, padding=2),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-            nn.MaxPool1d(2),
-            nn.Conv1d(128, d_model, kernel_size=5, padding=2),
-            nn.BatchNorm1d(d_model),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool1d(n_seq_tokens),
-        )
+        # --- Sequence Branch (POCD-ND encoded: 64 channels x L, or the
+        # language-model embeddings of the enhancer and promoter parts) ---
+        if self.dna_input == 'embedding':
+            self.seq_proj = dna_projection(config, d_model)
+        else:
+            self.seq_cnn = nn.Sequential(
+                nn.Conv1d(64, 128, kernel_size=5, padding=2),
+                nn.BatchNorm1d(128),
+                nn.ReLU(),
+                nn.MaxPool1d(2),
+                nn.Conv1d(128, d_model, kernel_size=5, padding=2),
+                nn.BatchNorm1d(d_model),
+                nn.ReLU(),
+                nn.AdaptiveAvgPool1d(n_seq_tokens),
+            )
 
         # Seq BiLSTM (2 layers, bidirectional)
         self.seq_bilstm = nn.LSTM(
@@ -222,8 +229,11 @@ class Kansformer(nn.Module):
         epi = epi * self.epi_channel_mask.to(epi.dtype)
 
         # --- Sequence branch ---
-        x_seq = self.seq_cnn(seq)                # (B, d_model, n_seq_tokens)
-        x_seq = x_seq.permute(0, 2, 1)          # (B, n_seq_tokens, d_model)
+        if self.dna_input == 'embedding':
+            x_seq = self.seq_proj(seq)           # (B, n_seq_tokens, d_model)
+        else:
+            x_seq = self.seq_cnn(seq)            # (B, d_model, n_seq_tokens)
+            x_seq = x_seq.permute(0, 2, 1)      # (B, n_seq_tokens, d_model)
         x_seq, _ = self.seq_bilstm(x_seq)       # (B, n_seq_tokens, d_model)
         x_seq = self.seq_drop(x_seq)
 

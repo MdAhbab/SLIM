@@ -32,7 +32,8 @@ import yaml
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Keys under `paths:` that name a file or directory on disk.
-PATH_KEYS = ("bengi_dir", "feats_config", "ref_genome", "track_quantiles")
+PATH_KEYS = ("bengi_dir", "feats_config", "ref_genome", "track_quantiles",
+             "dna_embeddings")
 # Keys that hold lists of paths (folders, or glob patterns of files).
 PATH_LIST_KEYS = ("bengi_dirs", "test_dirs", "exclusion_files")
 
