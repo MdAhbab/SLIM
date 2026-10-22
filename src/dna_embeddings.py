@@ -58,6 +58,18 @@ class ElementEmbeddings:
             self._array = np.load(os.path.join(self.folder, "embeddings.npy"), mmap_mode="r")
         return self._array
 
+    def count_missing(self, chroms, enhancers, promoters) -> int:
+        """Pairs (arrays) with an enhancer or promoter that has no embedding;
+        the DNA branch would read zeros for them."""
+        chroms = np.asarray(chroms, dtype=object)
+        known = np.isin(chroms, CHROMS)
+        codes = np.array([_INDEX.get(c, 0) for c in chroms], dtype=np.int64)
+        missing = ~known
+        for positions in (enhancers, promoters):
+            keys = (codes << 32) | np.asarray(positions, dtype=np.int64)
+            missing |= ~np.isin(keys, self.keys)
+        return int(missing.sum())
+
     def element(self, chrom: str, position: int) -> np.ndarray:
         """(segments, dim) of one element; zeros if it was not embedded."""
         if chrom in _INDEX:

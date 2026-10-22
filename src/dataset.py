@@ -223,6 +223,18 @@ class EPIDataset(Dataset):
             self.mode = "pipeline"
             self._source = source_dataset
             print(f"EPIDataset: wrapping {len(self._source)} pipeline samples")
+            if self.embeddings is not None and not self.skip_sequence:
+                # A pair whose enhancer or promoter has no embedding would give
+                # the DNA branch zeros, silently. Stop instead.
+                cols = self._source.cols
+                missing = self.embeddings.count_missing(
+                    self._source.get_chrom_groups(), cols["enh_coord"], cols["prom_coord"])
+                if missing and not config["data"].get("allow_missing_embeddings", False):
+                    raise ValueError(
+                        f"{missing:,} of {len(self._source):,} pairs have an enhancer or "
+                        f"promoter without a DNA embedding in "
+                        f"{config['paths']['dna_embeddings']}; embed them first "
+                        f"(scripts/data/dna_embeddings.py --extend)")
 
         elif sequences is not None:
             self.mode = "manual"

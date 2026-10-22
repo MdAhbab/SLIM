@@ -82,6 +82,53 @@ def build_embeddings(bengi_dir, genome, out):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_extending_a_table_matches_embedding_everything(tmp_path):
+    """--extend embeds only the missing elements; the merged table equals one
+    built from all the files at once."""
+    pytest.importorskip("pyfaidx")
+    import shutil
+    from test_end_to_end import CHROMS, write_dataset
+    bengi_dir, _feats = write_dataset(tmp_path / "data")
+    genome = tmp_path / "toy.fa"
+    write_genome(genome, CHROMS)
+    files = sorted(bengi_dir.glob("*.tsv*"))
+    first = tmp_path / "first"
+    first.mkdir()
+    shutil.copy(files[0], first / files[0].name)
+    build_embeddings(first, genome, tmp_path / "old")
+    build_embeddings(bengi_dir, genome, tmp_path / "all")
+
+    script = str(ROOT / "scripts" / "data" / "dna_embeddings.py")
+    common = ["--pairs", str(bengi_dir / "*.tsv*"), "--out", str(tmp_path / "extended"),
+              "--shards", "2", "--segments", "4", "--window", "300",
+              "--extend", str(tmp_path / "old")]
+    for shard in ("0", "1"):
+        result = subprocess.run([sys.executable, script, *common, "--genome", str(genome),
+                                 "--model", "dummy", "--shard", shard, "--device", "cpu"],
+                                capture_output=True, text=True, timeout=600)
+        assert result.returncode == 0, result.stdout + result.stderr
+    result = subprocess.run([sys.executable, script, *common, "--merge"],
+                            capture_output=True, text=True, timeout=600)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    old, full = ElementEmbeddings(str(tmp_path / "old")), ElementEmbeddings(str(tmp_path / "all"))
+    extended = ElementEmbeddings(str(tmp_path / "extended"))
+    assert 0 < len(old.keys) < len(full.keys)
+    assert np.array_equal(extended.keys, full.keys)
+    assert np.array_equal(np.asarray(extended.array), np.asarray(full.array))
+    assert not (tmp_path / "extended" / "new_elements.npy").exists()
+
+
+def test_missing_embeddings_are_counted():
+    class Table(ElementEmbeddings):
+        def __init__(self, keys):
+            self.keys = np.sort(np.asarray(keys, dtype=np.int64))
+    known = element_key(["chr1", "chr1", "chr2"], [100, 200, 300])
+    table = Table(known)
+    assert table.count_missing(["chr1", "chr1"], [100, 100], [200, 999]) == 1
+    assert table.count_missing(["chr2", "chrM"], [300, 100], [300, 200]) == 1
+
+
 @pytest.mark.slow
 def test_training_with_both_dna_inputs(tmp_path):
     pytest.importorskip("pyfaidx")

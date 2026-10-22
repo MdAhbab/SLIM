@@ -22,6 +22,10 @@ them. With --shards each process embeds every n-th element and --merge joins
 the parts. --model dummy uses a fixed random projection of the bases instead
 of a language model, for tests.
 
+With --extend OLD, only the elements missing from the table in OLD are
+embedded, and --merge writes the union of OLD and them to --out (a new
+folder; OLD is not changed). The model settings must match OLD's.
+
 Nucleotide Transformer v2's own model code needs transformers 4.x (tested
 with 4.46.3). Install it apart from the training environment, for example
   pip install --target /tmp/tf4 --no-deps transformers==4.46.3 \
@@ -149,6 +153,26 @@ def embed(model, sequences, segments: int) -> np.ndarray:
     return (pooled[:n] + pooled[n:, ::-1]) / 2
 
 
+def extend_table(old: Path, new_keys, new_rows, meta, out: Path):
+    """The union of the table in `old` and the new rows, sorted by key, written
+    to <out>/embeddings.npy. Returns the keys and the written array."""
+    old_meta = json.loads((old / "meta.json").read_text())
+    for name in ("model", "window", "segments", "dim"):
+        if old_meta.get(name) != meta.get(name):
+            raise SystemExit(f"{name} differs from {old}: {meta.get(name)} vs {old_meta.get(name)}")
+    old_keys = np.load(old / "keys.npy")
+    old_rows = np.load(old / "embeddings.npy", mmap_mode="r")
+    keys = np.union1d(old_keys, new_keys)
+    table = np.lib.format.open_memmap(out / "embeddings.npy", mode="w+", dtype=np.float16,
+                                      shape=(len(keys),) + old_rows.shape[1:])
+    for source_keys, rows in ((old_keys, old_rows), (new_keys, new_rows)):
+        at = np.searchsorted(keys, source_keys)
+        for s in range(0, len(at), 20000):
+            table[at[s:s + 20000]] = rows[s:s + 20000]
+    table.flush()
+    return keys, table
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--pairs", nargs="+", required=True, help="pair files (globs)")
@@ -162,25 +186,40 @@ def main():
     p.add_argument("--shard", type=int, default=0)
     p.add_argument("--shards", type=int, default=1)
     p.add_argument("--merge", action="store_true")
+    p.add_argument("--extend", default=None,
+                   help="an existing embedding folder: embed only what it lacks")
     args = p.parse_args()
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     keys = elements(args.pairs)
     print(f"{len(keys):,} elements")
+    if args.extend:
+        if Path(args.extend).resolve() == out.resolve():
+            raise SystemExit("--out must be a new folder, not the one --extend names")
+        keys = keys[~np.isin(keys, np.load(Path(args.extend) / "keys.npy"))]
+        print(f"  {len(keys):,} of them are not in {args.extend}")
     if args.merge:
         parts = [np.load(out / f"part{i}.npy", mmap_mode="r") for i in range(args.shards)]
         meta = json.loads((out / "part0.json").read_text())
-        merged = np.lib.format.open_memmap(out / "embeddings.npy", mode="w+",
-                                           dtype=np.float16,
+        target = out / ("new_elements.npy" if args.extend else "embeddings.npy")
+        merged = np.lib.format.open_memmap(target, mode="w+", dtype=np.float16,
                                            shape=(len(keys),) + parts[0].shape[1:])
         for i, part in enumerate(parts):
             merged[i::args.shards] = part
         merged.flush()
+        if args.extend:
+            keys, merged = extend_table(Path(args.extend), keys, merged, meta, out)
+            new_file = target
         np.save(out / "keys.npy", keys)
         meta.update(elements=len(keys), shards=args.shards)
+        if args.extend:
+            meta["extends"] = str(args.extend)
+            del merged
+            new_file.unlink()
         (out / "meta.json").write_text(json.dumps(meta, indent=1))
-        print(f"Merged {args.shards} parts into {out / 'embeddings.npy'} {merged.shape}")
+        print(f"Merged {args.shards} parts into {out / 'embeddings.npy'} "
+              f"({len(keys):,} elements)")
         return
 
     import pyfaidx
