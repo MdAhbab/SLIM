@@ -1,0 +1,14 @@
+# R1: YY1 motif matches on each strand (JASPAR 2024 MA0095.4 at p 1e-4; the
+# 8 bp motif cannot reach p 1e-5; scripts/data/motif_tracks.py) as two more
+# sequence tracks beside the CTCF ones. YY1 bridges enhancer-promoter loops.
+# On top of R0; no model change.
+extends: phase2_r0.yaml
+
+experiment_name: "phase2_r1_yy1"
+output_name: "phase2_r1_yy1"
+
+data:
+  n_epigenetic_features: 13
+  feats_order: ["CTCF", "DNase", "H3K27ac", "H3K27me3", "H3K36me3", "H3K4me1",
+                "H3K4me3", "H3K9me3", "CTCFmotif_plus", "CTCFmotif_minus",
+                "YY1motif_plus", "YY1motif_minus"]

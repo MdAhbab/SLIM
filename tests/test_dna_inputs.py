@@ -49,6 +49,23 @@ def test_motif_tracks_find_a_planted_site_on_each_strand():
     assert torch.nonzero(minus["chr1"]).flatten().tolist() == [6]
 
 
+def test_a_short_matrix_refuses_a_pvalue_it_cannot_reach():
+    # JASPAR 2024's YY1 matrix (MA0095.4): an 8 bp core, whose best match
+    # alone has p 4 ** -8 = 1.5e-5. At 1e-5 every position used to pass.
+    yy1 = """>MA0095.4\tYy1
+A  [  3123  41529  39666  30769  41506    689    561   1597 ]
+C  [ 33122    926   1447   2536    746    241    165    971 ]
+G  [  3684    287   1320   8658    712    708  42263  39612 ]
+T  [  3419    606    915   1385    384  41710    359   1168 ]
+"""
+    name, counts = motif_tracks.read_jaspar(yy1)
+    lod = motif_tracks.log_odds(counts)
+    assert name == "Yy1"
+    with pytest.raises(ValueError, match="best match has p"):
+        motif_tracks.threshold(lod, 1e-5)
+    assert 0 < motif_tracks.threshold(lod, 1e-4) < lod.max(axis=0).sum()
+
+
 def test_embeddings_do_not_depend_on_the_strand():
     model = dna_embeddings.DummyModel()
     rng = np.random.default_rng(0)

@@ -1,0 +1,33 @@
+# Stage 2, C: R0 with every arm on (R1 YY1 motifs, R2 sequence path, R3
+# extrusion, R4 chromatin groups). Before Stage 2 runs, each arm that fails
+# the Stage 1 keep rule is switched off here, so C is R0 plus the kept arms.
+extends: phase2_r1_yy1.yaml
+
+experiment_name: "phase2_c"
+output_name: "phase2_c"
+
+model:
+  seq_compat:
+    enabled: true
+    rank: 32
+    unary: 16
+  extrusion:
+    enabled: true
+    barriers: true
+    tracks: ["CTCF", "CTCFmotif_plus", "CTCFmotif_minus", "YY1motif_plus",
+             "YY1motif_minus", "DNase", "H3K4me3", "H3K36me3"]
+    hidden: 16
+    heads: 2
+    margin_bins: 3
+    anchor_pool_bins: 5
+    processivity_kb: 250
+    out_dim: 32
+  chromatin_stem: "groups"
+  chromatin_groups:
+    accessibility: ["DNase"]
+    active: ["H3K27ac", "H3K4me1"]
+    promoter: ["H3K4me3"]
+    transcription: ["H3K36me3"]
+    repressive: ["H3K27me3", "H3K9me3"]
+    architecture: ["CTCF", "CTCFmotif_plus", "CTCFmotif_minus",
+                   "YY1motif_plus", "YY1motif_minus"]

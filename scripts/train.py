@@ -693,8 +693,13 @@ def main():
 
     if config["data"].get("dna_input", "pocd") == "embedding":
         # Language-model embeddings need no fitting (src/dna_embeddings.py).
-        print(f"\nDNA input: language-model embeddings from "
-              f"{config['paths']['dna_embeddings']}")
+        # With the DNA branch off the table is never read (src/dataset.py).
+        if config["data"].get("modalities", "all") == "epi":
+            print("\nDNA input: none (data.modalities epi); the embedding table "
+                  "is not read")
+        else:
+            print(f"\nDNA input: language-model embeddings from "
+                  f"{config['paths']['dna_embeddings']}")
         encoder = None
     else:
         print(f"\nFitting the POCD-ND encoder "

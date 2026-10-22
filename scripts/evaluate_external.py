@@ -73,6 +73,9 @@ def merged_feature_config(paths) -> str:
 
 
 def load_run(run: Path, device):
+    """The run's configuration, model and sequence encoder. The model is
+    rebuilt from the configuration saved with the weights, so the switches
+    it was trained with (src/pair_modules.py) are rebuilt too."""
     config = yaml.safe_load((run / "config_snapshot.yaml").read_text())
     config.pop("_run", None)
     state = torch.load(run / "checkpoint.pt", map_location=device, weights_only=False)
@@ -99,7 +102,8 @@ def main():
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--dna-embeddings", default=None,
                         help="DNA embedding folder on this machine, for runs "
-                             "trained with data.dna_input embedding")
+                             "trained with data.dna_input embedding (not read "
+                             "when data.modalities is epi)")
     parser.add_argument("--track-quantiles", default=None,
                         help="quantile file on this machine, for runs trained "
                              "with data.track_norm cell_quantile")

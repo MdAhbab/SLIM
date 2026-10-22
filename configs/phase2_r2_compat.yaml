@@ -1,0 +1,15 @@
+# R2: a direct path from the language-model embeddings to the head
+# (src/pair_modules.py, SequencePairPath): a rank-32 product of the mean
+# enhancer and promoter embeddings plus one 16-value projection of each.
+# Without it the DNA branch reaches the head only through the pooling and the
+# memory. On top of R0.
+extends: phase2_r0.yaml
+
+experiment_name: "phase2_r2_compat"
+output_name: "phase2_r2_compat"
+
+model:
+  seq_compat:
+    enabled: true
+    rank: 32
+    unary: 16

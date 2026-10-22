@@ -6,6 +6,7 @@ from src.model_layers import (
 )
 from src.slim_model import (build_epi_channel_mask, dna_projection, dna_tokens,
                              sequence_input_scale)
+from src.pair_modules import build_epi_stem, build_pair_features, pair_head
 
 
 # ---------------------------------------------------------------------------
@@ -161,14 +162,10 @@ class Kansformer(nn.Module):
         self.seq_drop = nn.Dropout(drop)
 
         # --- Epigenetic Branch (n_epi channels x 5000 bins) ---
-        # Single CNN layer + MaxPool1d(10) → 500 tokens (matches reference)
+        # Single CNN layer + MaxPool1d(10) → 500 tokens (matches reference),
+        # or one per functional group of tracks (model.chromatin_stem, as SLIM)
         n_epi = config['data']['n_epigenetic_features']  # 9 (8 epi + 1 pos_enc)
-        self.epi_cnn = nn.Sequential(
-            nn.Conv1d(n_epi, d_model, kernel_size=11, padding=5),
-            nn.BatchNorm1d(d_model),
-            nn.LeakyReLU(),
-            nn.MaxPool1d(self.epi_pool_factor),  # 5000 → 500 tokens
-        )
+        self.epi_cnn = build_epi_stem(config, d_model, self.epi_pool_factor)
 
         # Epi BiLSTM (matches reference)
         self.epi_bilstm = nn.LSTM(
@@ -220,6 +217,20 @@ class Kansformer(nn.Module):
         # --- Distance Regression Head ---
         self.dist_kan1 = KANLinear(pool_dim, d_model)
         self.dist_kan2 = KANLinear(d_model, 1)
+
+        # --- Pair features (src/pair_modules.py), the same modules as SLIM ---
+        # Built last, so a configuration without them initialises every other
+        # weight as before; fc_extra starts at zero.
+        self.pair_features = build_pair_features(config)
+        if self.pair_features is not None:
+            self.fc_extra = pair_head(self.pair_features, self.fc_linear.out_features)
+
+    def pair_vector(self, seq, epi, enh_idx, prom_idx):
+        """The pair features (B, pair dim), read from the inputs as the
+        branches see them, as in SLIM."""
+        return self.pair_features(seq * self.seq_input_scale.to(seq.dtype),
+                                  epi * self.epi_channel_mask.to(epi.dtype),
+                                  enh_idx, prom_idx)
 
     def encode(self, seq, epi):
         """Both branches and the KAN-Transformer, without the heads: tokens
@@ -284,6 +295,8 @@ class Kansformer(nn.Module):
         # --- Classification head ---
         feats = self.head_drop(z_pool)
         feats = self.fc_linear(feats)             # (B, 128)
+        if self.pair_features is not None:
+            feats = feats + self.fc_extra(self.pair_vector(seq, epi, enh_idx, prom_idx))
         feats = self.fc_kan1(feats)               # (B, 64)
         cls_out = self.fc_kan2(feats)             # (B, 1)
 

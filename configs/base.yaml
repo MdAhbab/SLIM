@@ -95,6 +95,12 @@ model:
   sa_r: 32                   # pooling attention heads
   att_penalty: 0.1           # Frobenius penalty keeping pooling heads distinct
   drop_path_rate: 0.1        # stochastic depth, same for every encoder
+  # Phase 2 switches (src/pair_modules.py), all off here and left unset so
+  # the model settings of earlier runs are unchanged; see phase2_r2 to r4:
+  # chromatin_stem: "single"  # groups: one chromatin CNN per functional
+  #                           # group (chromatin_groups), with a gate
+  # extrusion: {enabled: false}   # loop-extrusion pair features
+  # seq_compat: {enabled: false}  # language-model enhancer-promoter path
 
 training:
   lr: 0.0001                 # peak learning rate
@@ -146,6 +152,9 @@ augmentation:
   rc_prob: 0.5               # reverse complement
   rc_mode: "segment"         # each sequence in place, enhancer kept first
   epi_noise_std: 0.05        # Gaussian noise on chromatin channels
+  # noise_mode: "all"        # unset: the noise also reaches the position
+                             # channel (the original rule); "tracks" from
+                             # phase2_r0.yaml on
   shift_max_bins: 3          # random bin shift
   mark_dropout: 0.0          # hide each whole track with this probability;
                              # needs data.presence_channels

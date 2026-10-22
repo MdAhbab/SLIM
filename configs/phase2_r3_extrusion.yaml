@@ -1,0 +1,23 @@
+# R3: the loop-extrusion module (src/pair_modules.py, LoopExtrusion). Learned
+# barrier hazards for the two legs of a cohesin loaded between the anchors,
+# strand-equivariant, read from the CTCF, motif, DNase, H3K4me3 and H3K36me3
+# tracks (those in data.feats_order; YY1 only from R1 on). Its features (the
+# chance both legs reach the anchors, the barrier totals, the anchor
+# strengths) enter the head through a zero-initialised layer. On top of R0.
+extends: phase2_r0.yaml
+
+experiment_name: "phase2_r3_extrusion"
+output_name: "phase2_r3_extrusion"
+
+model:
+  extrusion:
+    enabled: true
+    barriers: true           # false: the uniform base hazard only (C-null)
+    tracks: ["CTCF", "CTCFmotif_plus", "CTCFmotif_minus", "YY1motif_plus",
+             "YY1motif_minus", "DNase", "H3K4me3", "H3K36me3"]
+    hidden: 16
+    heads: 2
+    margin_bins: 3           # anchor neighbourhood without learned barriers
+    anchor_pool_bins: 5
+    processivity_kb: 250     # starting base hazard, 0.5 kb / 250 kb per bin
+    out_dim: 32

@@ -22,6 +22,11 @@ Shape flow:
                               structured self-attention pooling
     [enhancer, promoter, attention-mean, attention-max] -> 720
                               interaction head, distance head
+
+The Phase 2 switches in src/pair_modules.py, all off by default, replace the
+chromatin CNN with one per functional group of tracks and add pair features
+(loop extrusion between the anchors, the language-model enhancer-promoter
+path) to the interaction head. The baseline takes the same switches.
 """
 
 from __future__ import annotations
@@ -36,6 +41,7 @@ from src.model_layers import (
     KANLinear, PositionalEncoding, SelfAttentionPooling,
 )
 from src.memory_encoder import MemoryConfig, MemoryEncoder
+from src.pair_modules import build_epi_stem, build_pair_features, pair_head
 
 # Names of the chromatin tracks in channel order, after the position channel.
 CHROMATIN_TRACKS = (
@@ -146,14 +152,11 @@ class SLIM(nn.Module):
         )
         self.seq_drop = nn.Dropout(drop)
 
-        # Chromatin branch: one position channel plus eight tracks.
+        # Chromatin branch: one position channel plus the tracks, read by one
+        # convolution or, with model.chromatin_stem "groups", by one per
+        # functional group (src/pair_modules.py).
         n_epi = config["data"]["n_epigenetic_features"]
-        self.epi_cnn = nn.Sequential(
-            nn.Conv1d(n_epi, d_model, kernel_size=11, padding=5),
-            nn.BatchNorm1d(d_model),
-            nn.LeakyReLU(),
-            nn.MaxPool1d(self.epi_pool_factor),
-        )
+        self.epi_cnn = build_epi_stem(config, d_model, self.epi_pool_factor)
         self.epi_bilstm = nn.LSTM(
             d_model, d_model // 2, batch_first=True,
             bidirectional=True, num_layers=2, dropout=drop,
@@ -240,6 +243,13 @@ class SLIM(nn.Module):
         self.dist_kan1 = KANLinear(pool_dim, d_model)
         self.dist_kan2 = KANLinear(d_model, 1)
 
+        # Pair features (model.extrusion, model.seq_compat), added to the
+        # interaction head through a zero-initialised layer. Built last, so a
+        # configuration without them initialises every other weight as before.
+        self.pair_features = build_pair_features(config)
+        if self.pair_features is not None:
+            self.fc_extra = pair_head(self.pair_features, self.fc_linear.out_features)
+
     @property
     def variant(self) -> str:
         """Short label for the feed-forward sublayer in use."""
@@ -268,6 +278,15 @@ class SLIM(nn.Module):
         z = torch.cat([x_seq, x_epi], dim=1)
         z = self.pos_enc(self.proj_drop(z))
         return self.encoder(z, return_trace=return_trace)
+
+    def pair_vector(self, seq: Tensor, epi: Tensor, enh_idx: Tensor,
+                    prom_idx: Tensor) -> Tensor:
+        """The pair features (B, pair dim), read from the inputs as the
+        branches see them: the DNA input scaled and the chromatin channels
+        masked as in `encode`."""
+        return self.pair_features(seq * self.seq_input_scale.to(seq.dtype),
+                                  epi * self.epi_channel_mask.to(epi.dtype),
+                                  enh_idx, prom_idx)
 
     def forward(self, seq: Tensor, epi: Tensor, enh_idx: Tensor,
                 prom_idx: Tensor, return_trace: bool = False):
@@ -312,7 +331,10 @@ class SLIM(nn.Module):
         )
 
         feats = self.head_drop(z_pool)
-        cls_out = self.fc_kan2(self.fc_kan1(self.fc_linear(feats)))
+        hidden = self.fc_linear(feats)
+        if self.pair_features is not None:
+            hidden = hidden + self.fc_extra(self.pair_vector(seq, epi, enh_idx, prom_idx))
+        cls_out = self.fc_kan2(self.fc_kan1(hidden))
 
         dist_feats = self.head_drop(z_pool)
         reg_out = self.dist_kan2(self.dist_kan1(dist_feats))

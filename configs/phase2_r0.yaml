@@ -1,0 +1,12 @@
+# R0: the Gaussian noise of the augmentation goes on the chromatin tracks
+# only. Until now it also reached channel 0, the signed position channel, and
+# the clamp at zero removed its negative values outside the anchors during
+# training, while evaluation kept them. On top of phase2_dna_both.yaml; every
+# later Phase 2 arm (r1 to r4, c) is built on this one.
+extends: phase2_dna_both.yaml
+
+experiment_name: "phase2_r0"
+output_name: "phase2_r0"
+
+augmentation:
+  noise_mode: "tracks"

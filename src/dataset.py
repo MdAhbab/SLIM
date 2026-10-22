@@ -160,7 +160,7 @@ class EPIDataset(Dataset):
         self.aug_rc_prob = aug_cfg.get("rc_prob", 0.5)
         self.aug_epi_noise_std = aug_cfg.get("epi_noise_std", 0.05)
         self.aug_shift_max = aug_cfg.get("shift_max_bins", 3)
-        # How the two augmentations that move things around are applied.
+        # How the augmentations that touch the layout are applied.
         #   rc_mode "segment": each of the enhancer and promoter sequences is
         #       reverse-complemented in place, so the enhancer stays first,
         #       which is the layout the position-specific encoding and the
@@ -172,8 +172,14 @@ class EPIDataset(Dataset):
         #       the gap. "all" (the original rule) rolls every channel,
         #       including the position channel, circularly, so the anchor
         #       indices no longer match the position channel.
+        #   noise_mode "tracks": the Gaussian noise goes on the chromatin
+        #       tracks only. "all" (the original rule) also puts it on
+        #       channel 0, the signed position channel, and the clamp at zero
+        #       then removes its negative values outside the anchors, which
+        #       evaluation keeps.
         self.aug_rc_mode = aug_cfg.get("rc_mode", "concat")
         self.aug_shift_mode = aug_cfg.get("shift_mode", "all")
+        self.aug_noise_mode = aug_cfg.get("noise_mode", "all")
         # With data.presence_channels, the last n_tracks channels say which
         # tracks the cell has. Mark dropout hides whole tracks during training
         # (zeroes the track and its presence channel), so the model learns to
@@ -194,6 +200,8 @@ class EPIDataset(Dataset):
             raise ValueError("augmentation.rc_mode must be segment or concat")
         if self.aug_shift_mode not in {"tracks", "all"}:
             raise ValueError("augmentation.shift_mode must be tracks or all")
+        if self.aug_noise_mode not in {"tracks", "all"}:
+            raise ValueError("augmentation.noise_mode must be tracks or all")
         # With the DNA branch switched off, the model never looks at the
         # encoded sequence, so skip the encoding work and send zeros.
         self.skip_sequence = config["data"].get("modalities", "all") == "epi"
@@ -202,16 +210,23 @@ class EPIDataset(Dataset):
         # instead of the encoded sequence; "pocd" is the original encoding.
         self.dna_input = config["data"].get("dna_input", "pocd")
         self.embeddings = None
+        self.embedding_shape = None
         if self.dna_input == "embedding":
-            from src.dna_embeddings import ElementEmbeddings
-            self.embeddings = ElementEmbeddings(config["paths"]["dna_embeddings"])
-            expected = (config["data"].get("dna_segments"),
-                        config["data"].get("dna_embedding_dim"))
-            if expected != (self.embeddings.segments, self.embeddings.dim):
-                raise ValueError(
-                    f"data.dna_segments and dna_embedding_dim are {expected} but "
-                    f"the embeddings have ({self.embeddings.segments}, "
-                    f"{self.embeddings.dim})")
+            self.embedding_shape = (2 * int(config["data"]["dna_segments"]),
+                                    int(config["data"]["dna_embedding_dim"]))
+            # With the DNA branch off it gets zeros of this shape and the
+            # table is never read, so a run without the language model needs
+            # no table.
+            if not self.skip_sequence:
+                from src.dna_embeddings import ElementEmbeddings
+                self.embeddings = ElementEmbeddings(config["paths"]["dna_embeddings"])
+                expected = (config["data"].get("dna_segments"),
+                            config["data"].get("dna_embedding_dim"))
+                if expected != (self.embeddings.segments, self.embeddings.dim):
+                    raise ValueError(
+                        f"data.dna_segments and dna_embedding_dim are {expected} but "
+                        f"the embeddings have ({self.embeddings.segments}, "
+                        f"{self.embeddings.dim})")
         elif self.dna_input != "pocd":
             raise ValueError("data.dna_input must be pocd or embedding")
 
@@ -339,11 +354,14 @@ class EPIDataset(Dataset):
                 dna = _reverse_complement(dna)
 
             # 2. Small Gaussian noise on epigenetic features (not on the
-            #    presence channels, which are exact)
+            #    presence channels, which are exact; with noise_mode
+            #    "tracks", not on the position channel either)
             if self.aug_epi_noise_std > 0:
+                first = 1 if self.aug_noise_mode == "tracks" else 0
                 last = 1 + self.n_tracks if self.presence else epi.shape[0]
-                noisy = epi[:last] + torch.randn_like(epi[:last]) * self.aug_epi_noise_std
-                epi[:last] = noisy.clamp(min=0)  # signals are non-negative
+                noisy = (epi[first:last]
+                         + torch.randn_like(epi[first:last]) * self.aug_epi_noise_std)
+                epi[first:last] = noisy.clamp(min=0)  # signals are non-negative
 
             # 3. Random shift of epigenetic bins (simulates coord jitter)
             if self.aug_shift_max > 0:
@@ -359,9 +377,9 @@ class EPIDataset(Dataset):
                     epi[1 + j] = 0.0
                     epi[1 + self.n_tracks + j] = 0.0
 
-        if self.embeddings is not None:
+        if self.dna_input == "embedding":
             if self.skip_sequence:
-                seq_enc = torch.zeros(2 * self.embeddings.segments, self.embeddings.dim)
+                seq_enc = torch.zeros(*self.embedding_shape)
             else:
                 seq_enc = self.embeddings.pair(raw["chrom"],
                                                int(self._source.cols["enh_coord"][idx]),

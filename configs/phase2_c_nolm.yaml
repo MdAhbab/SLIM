@@ -1,0 +1,15 @@
+# Stage 2, C without the language model: the DNA branch is off and so is the
+# sequence path that reads its embeddings; the motif tracks and the extrusion
+# module, the sequence-derived part, stay. The embedding table is not read.
+# The LM branch is kept only if C beats this by 0.005 AUPR at both seeds.
+extends: phase2_c.yaml
+
+experiment_name: "phase2_c_nolm"
+output_name: "phase2_c_nolm"
+
+data:
+  modalities: "epi"
+
+model:
+  seq_compat:
+    enabled: false

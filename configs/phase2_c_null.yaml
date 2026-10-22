@@ -1,0 +1,11 @@
+# Stage 2, C with the extrusion module's null control: no learned barriers,
+# only the uniform base hazard, so its features are a distance decay. Run
+# only if R3 is kept; C against this measures what the barriers add.
+extends: phase2_c.yaml
+
+experiment_name: "phase2_c_null"
+output_name: "phase2_c_null"
+
+model:
+  extrusion:
+    barriers: false

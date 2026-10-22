@@ -1,0 +1,105 @@
+{
+ "config": "configs/phase2_p1a.yaml",
+ "embeddings": "InstaDeepAI/nucleotide-transformer-v2-100m-multi-species",
+ "train_cells": [
+  "Bcell",
+  "GM12878",
+  "Gastric",
+  "H1",
+  "H1NPC",
+  "HeLa",
+  "IMR90",
+  "K562",
+  "Monocyte",
+  "NK",
+  "Ovary",
+  "Pancreas",
+  "Psoas",
+  "SmallIntestine",
+  "Tcell"
+ ],
+ "valid_cells": [
+  "HepG2",
+  "A549"
+ ],
+ "train_rows": 200000,
+ "train_positive_rate": 0.04547,
+ "valid_rows": 100000,
+ "valid_positive_rate": 0.04431,
+ "rows_without_embedding": {
+  "train": 0,
+  "valid": 0
+ },
+ "seed": 0,
+ "C": 1.0,
+ "sets": {
+  "distance": {
+   "auroc": 0.759978608353711,
+   "aupr": 0.1119824488872811,
+   "iterations": 8,
+   "features": 1,
+   "per_cell": {
+    "A549": {
+     "auroc": 0.7500007614492952,
+     "aupr": 0.12072853946352897,
+     "rows": 75393
+    },
+    "HepG2": {
+     "auroc": 0.7904362307701316,
+     "aupr": 0.08253244720180165,
+     "rows": 24607
+    }
+   }
+  },
+  "means": {
+   "auroc": 0.7605049336648535,
+   "aupr": 0.14189197865428285,
+   "iterations": 260,
+   "features": 1025,
+   "per_cell": {
+    "A549": {
+     "auroc": 0.7492355453712468,
+     "aupr": 0.15163954755926434,
+     "rows": 75393
+    },
+    "HepG2": {
+     "auroc": 0.8060053364451413,
+     "aupr": 0.10813320329980877,
+     "rows": 24607
+    }
+   }
+  },
+  "product": {
+   "auroc": 0.7528018071825555,
+   "aupr": 0.1376109471046604,
+   "iterations": 413,
+   "features": 1537,
+   "per_cell": {
+    "A549": {
+     "auroc": 0.7416939529140061,
+     "aupr": 0.1471824482117039,
+     "rows": 75393
+    },
+    "HepG2": {
+     "auroc": 0.7986819688448138,
+     "aupr": 0.10544774719113714,
+     "rows": 24607
+    }
+   }
+  }
+ },
+ "difference": {
+  "means - distance": {
+   "auroc": 0.0005263253111424948,
+   "aupr": 0.029909529767001758
+  },
+  "product - distance": {
+   "auroc": -0.007176801171155489,
+   "aupr": 0.02562849821737931
+  },
+  "product - means": {
+   "auroc": -0.007703126482297984,
+   "aupr": -0.004281031549622449
+  }
+ }
+}

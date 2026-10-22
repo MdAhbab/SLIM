@@ -12,11 +12,17 @@ far the best match centred in the bin scores above the score of p-value
 cell.
 
     python scripts/data/motif_tracks.py --genome hg19.fa --jaspar MA0139.2.jaspar --out DIR
+    python scripts/data/motif_tracks.py --genome hg19.fa --jaspar MA0095.4.jaspar \
+        --name YY1 --pvalue 1e-4 --out DIR
 
 Writes DIR/motif_<NAME>_plus.500bp.pt and DIR/motif_<NAME>_minus.500bp.pt in
 the layout of prepare_tracks.py (a dict from chromosome to a float32 tensor of
 ceil(length / 500) + 1 bins; chrM, chrMT and chrY zero), and
-DIR/motif_<NAME>.json with the threshold and the number of matches.
+DIR/motif_<NAME>.json with the threshold and the number of matches. NAME is
+the matrix's name in its header unless --name gives it (JASPAR 2024 names
+YY1's current matrix after the mouse gene, Yy1). A short matrix cannot reach
+a small p-value: the best match of the 8 bp YY1 core already has p 1.5e-5, so
+it is scanned at 1e-4, and a --pvalue no match can reach stops the scan.
 """
 
 from __future__ import annotations
@@ -77,6 +83,11 @@ def threshold(lod: np.ndarray, pvalue: float, step: float = 0.01) -> float:
         dist = shifted
         offset += column.min()
     tail = np.cumsum(dist[::-1])[::-1]         # P(score >= low + k)
+    if not (tail <= pvalue).any():
+        # argmax would return 0, the lowest score, and every position would
+        # count as a match.
+        raise ValueError(f"no score of this {lod.shape[1]} bp matrix has p <= {pvalue}; "
+                         f"its best match has p {tail[-1]:.2g}")
     k = int(np.argmax(tail <= pvalue))
     return (offset + k) * step
 
@@ -134,11 +145,14 @@ def main():
     p.add_argument("--jaspar", required=True, help="JASPAR-format matrix file")
     p.add_argument("--out", required=True)
     p.add_argument("--pvalue", type=float, default=1e-5)
+    p.add_argument("--name", default=None,
+                   help="motif name in the output files (default: the matrix's name)")
     args = p.parse_args()
 
     import pyfaidx
     import torch
     name, counts = read_jaspar(Path(args.jaspar).read_text())
+    name = args.name or name
     lod = log_odds(counts)
     cut = threshold(lod, args.pvalue)
     print(f"{name}: {lod.shape[1]} bp, threshold {cut:.2f} bits (p {args.pvalue}), "
